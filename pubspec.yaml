@@ -18,6 +18,9 @@ dependencies:
   sqflite: ^2.4.1
   path: ^1.9.1
 
+  # Device Info
+  device_info_plus: ^10.1.2
+
   # UI / Utils
   intl: ^0.18.1
   fl_chart: ^0.66.2
@@ -37,8 +40,14 @@ dev_dependencies:
 
 flutter_launcher_icons:
   android: true
-  ios: true
-  image_path: "assets/icon/logo.png"
+  ios: false
+  image_path: "assets/icon/logo1.png"
+
+  adaptive_icon_background: "#ffffff"
+  adaptive_icon_foreground: "assets/icon/logo4.png"
 
 flutter:
   uses-material-design: true
+
+  assets:
+    - assets/icon/

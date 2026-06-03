@@ -1,6 +1,9 @@
 // lib/screens/products_screen.dart
-// FIX: Was using DatabaseHelper (SQLite). Now uses FirebaseService (Firestore).
-// This is why products were not showing in Firebase dashboard.
+// My Pattarii — Products screen
+// Cost fields: Material, Plasma, Labour 1-4, Vettu 1-2, Welding 1-2,
+//              Runner 1-2, Varai, Polish 1-2, Spinner 1-2
+// Profit = sellPricePerKg - costPerKg  (all costs deducted including material)
+// For piece products: profit = profitPerKg × (weightG/1000)
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -14,7 +17,7 @@ class ProductsScreen extends StatefulWidget {
 }
 
 class _ProductsScreenState extends State<ProductsScreen> {
-  final _svc = FirebaseService.instance; // ← FIXED: was DatabaseHelper
+  final _svc = FirebaseService.instance;
   List<Product> _products = [];
   bool _showInactive = false;
   bool _loading = true;
@@ -54,8 +57,6 @@ class _ProductsScreenState extends State<ProductsScreen> {
   @override
   Widget build(BuildContext context) {
     final fmt = NumberFormat('#,##0.00', 'en_IN');
-
-    // Group by category
     final Map<String, List<Product>> groups = {};
     for (final p in _products) {
       groups.putIfAbsent(p.category, () => []).add(p);
@@ -163,7 +164,6 @@ class _ProductCard extends StatelessWidget {
         decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12),
             border: Border.all(color: const Color(0xFFEEEEEE))),
         child: Column(children: [
-          // Header
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
             decoration: BoxDecoration(
@@ -171,8 +171,13 @@ class _ProductCard extends StatelessWidget {
               borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
             ),
             child: Row(children: [
-              Expanded(child: Text(product.name,
-                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600))),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(product.name,
+                    style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                if (product.padii.isNotEmpty)
+                  Text(product.padii,
+                      style: TextStyle(fontSize: 11, color: color.withOpacity(0.7))),
+              ])),
               if (!isActive)
                 Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                     decoration: BoxDecoration(color: Colors.orange.shade100,
@@ -182,47 +187,32 @@ class _ProductCard extends StatelessWidget {
                             fontWeight: FontWeight.bold))),
               if (isActive) IconButton(
                 icon: Icon(Icons.edit_outlined, size: 18, color: color),
-                onPressed: onEdit,
-                padding: EdgeInsets.zero,
+                onPressed: onEdit, padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
               ),
               if (isActive) IconButton(
                 icon: const Icon(Icons.block_outlined, size: 18, color: Colors.orange),
-                onPressed: onDisable,
-                padding: EdgeInsets.zero,
+                onPressed: onDisable, padding: EdgeInsets.zero,
                 constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
               ),
             ]),
           ),
-          // Details
           Padding(
-            padding: const EdgeInsets.all(12),
+            padding: const EdgeInsets.all(14),
             child: Column(children: [
-              // Chips
-              Wrap(spacing: 6, runSpacing: 4, children: [
-                _chip('${product.productWeightG}g/piece'),
-                _chip('Sell Rs ${product.sellPricePerKg.toStringAsFixed(0)}/kg'),
-                _chip(product.soldByPiece ? 'Sold per piece' : 'Sold per kg'),
-                if (product.padii.isNotEmpty) _chip(product.padii),
+              // Key metrics row
+              Row(children: [
+                _kv('Weight', '${product.productWeightG}g', color),
+                _kv('Sell', 'Rs ${fmt.format(product.sellPricePerKg)}/kg', color),
+                _kv('Cost/kg', 'Rs ${fmt.format(product.costPerKg)}', Colors.red.shade700),
+                _kv('Profit/${product.unit}',
+                    'Rs ${fmt.format(product.profitPerUnit)}',
+                    product.profitPerUnit >= 0
+                        ? const Color(0xFF1A6B2A) : Colors.red),
               ]),
-              const SizedBox(height: 10),
-              // Costs
-              _CostGrid(product: product),
               const SizedBox(height: 8),
-              // Profit summary
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                decoration: BoxDecoration(
-                    color: const Color(0xFFC6EFCE), borderRadius: BorderRadius.circular(8)),
-                child: Row(children: [
-                  Text('Cost/kg: Rs ${fmt.format(product.costPerKg)}',
-                      style: const TextStyle(fontSize: 12, color: Color(0xFF555555))),
-                  const Spacer(),
-                  Text('Profit: Rs ${fmt.format(product.profitPerUnit)}/${product.unit}',
-                      style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold,
-                          color: Color(0xFF1A6B2A))),
-                ]),
-              ),
+              // Cost breakdown chips
+              _CostChips(p: product),
             ]),
           ),
         ]),
@@ -230,99 +220,136 @@ class _ProductCard extends StatelessWidget {
     );
   }
 
-  Widget _chip(String text) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-    decoration: BoxDecoration(color: const Color(0xFFF5F5F5),
-        borderRadius: BorderRadius.circular(5)),
-    child: Text(text, style: const TextStyle(fontSize: 11, color: Color(0xFF555555))));
+  Widget _kv(String label, String value, Color color) => Expanded(
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(label, style: const TextStyle(fontSize: 9, color: Color(0xFF888888))),
+      Text(value, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color),
+          overflow: TextOverflow.ellipsis),
+    ]),
+  );
 }
 
-class _CostGrid extends StatelessWidget {
-  final Product product;
-  const _CostGrid({required this.product});
+class _CostChips extends StatelessWidget {
+  final Product p;
 
+  const _CostChips({
+    super.key,
+    required this.p,
+  });
   @override
   Widget build(BuildContext context) {
-    final items = [
-      if (product.costMaterial > 0) _CostItem('Material', product.costMaterial),
-      if (product.costLabour  > 0) _CostItem('Labour',   product.costLabour),
-      if (product.costPlasma  > 0) _CostItem('Plasma',   product.costPlasma),
-      if (product.costVettu   > 0) _CostItem('Vettu',    product.costVettu),
-      if (product.costWelding > 0) _CostItem('Welding',  product.costWelding),
-      if (product.costRunner  > 0) _CostItem('Runner',   product.costRunner),
-      if (product.costVarai   > 0) _CostItem('Varai',    product.costVarai),
-      if (product.costPolish  > 0) _CostItem('Polish',   product.costPolish),
-    ];
-    return Wrap(spacing: 8, runSpacing: 4, children: items.map((i) =>
-        Text('${i.label}: Rs ${i.val.toStringAsFixed(1)}',
-            style: const TextStyle(fontSize: 11, color: Color(0xFF888888)))).toList());
+    final costs = p.workerCostsPerProduct;
+    if (costs.isEmpty) return const SizedBox.shrink();
+    final fmt = NumberFormat('#,##0.0', 'en_IN');
+    return Wrap(spacing: 6, runSpacing: 4, children: [
+      if (p.costMaterial > 0) _chip('Material', p.costMaterial, const Color(0xFF7B4F06), fmt),
+      ...costs.entries.map((e) => _chip(e.key, e.value, const Color(0xFF1F4E79), fmt)),
+    ]);
   }
+
+  Widget _chip(String label, double val, Color color, NumberFormat fmt) =>
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.08),
+          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: color.withOpacity(0.2)),
+        ),
+        child: Text('$label: Rs ${fmt.format(val)}',
+            style: TextStyle(fontSize: 10, color: color, fontWeight: FontWeight.w500)),
+      );
 }
 
-class _CostItem { final String label; final double val; const _CostItem(this.label, this.val); }
-
 // ══════════════════════════════════════════════════════════════════════════════
-// PRODUCT FORM — create & edit, uses FirebaseService
+// PRODUCT FORM
 // ══════════════════════════════════════════════════════════════════════════════
 class ProductFormScreen extends StatefulWidget {
   final Product? product;
   const ProductFormScreen({super.key, this.product});
-  @override
-  State<ProductFormScreen> createState() => _ProductFormScreenState();
+  @override State<ProductFormScreen> createState() => _ProductFormState();
 }
 
-class _ProductFormScreenState extends State<ProductFormScreen> {
+class _ProductFormState extends State<ProductFormScreen> {
   final _formKey = GlobalKey<FormState>();
-  late TextEditingController _name, _category, _padii,
-      _weightG, _sellPrice, _labour, _plasma, _vettu,
-      _welding, _runner, _varai, _polish, _material;
   bool _soldByPiece = false;
   bool _saving = false;
+
+  late final TextEditingController _name, _category, _padii, _weightG, _sellPrice;
+
+  // Cost controllers — multi-worker
+  late final TextEditingController
+      _material, _plasma,
+      _labour1, _labour2, _labour3, _labour4,
+      _vettu1,  _vettu2,
+      _welding1, _welding2,
+      _runner1,  _runner2,
+      _varai,
+      _polish1, _polish2,
+      _spinner1, _spinner2;
 
   @override
   void initState() {
     super.initState();
     final p = widget.product;
-    _name      = TextEditingController(text: p?.name      ?? '');
-    _category  = TextEditingController(text: p?.category  ?? '');
-    _padii     = TextEditingController(text: p?.padii     ?? '');
-    _weightG   = TextEditingController(text: p?.productWeightG.toString() ?? '');
-    _sellPrice = TextEditingController(text: p?.sellPricePerKg.toString() ?? '');
-    _labour    = TextEditingController(text: (p?.costLabour  ?? 0).toString());
-    _plasma    = TextEditingController(text: (p?.costPlasma  ?? 0).toString());
-    _vettu     = TextEditingController(text: (p?.costVettu   ?? 0).toString());
-    _welding   = TextEditingController(text: (p?.costWelding ?? 0).toString());
-    _runner    = TextEditingController(text: (p?.costRunner  ?? 0).toString());
-    _varai     = TextEditingController(text: (p?.costVarai   ?? 0).toString());
-    _polish    = TextEditingController(text: (p?.costPolish  ?? 0).toString());
-    _material  = TextEditingController(text: (p?.costMaterial ?? 0).toString());
+    _name     = TextEditingController(text: p?.name     ?? '');
+    _category = TextEditingController(text: p?.category ?? '');
+    _padii    = TextEditingController(text: p?.padii    ?? '');
+    _weightG  = TextEditingController(text: p?.productWeightG.toString() ?? '');
+    _sellPrice= TextEditingController(text: p?.sellPricePerKg.toString() ?? '');
     _soldByPiece = p?.soldByPiece ?? false;
+
+    _material = _c(p?.costMaterial);
+    _plasma   = _c(p?.costPlasma);
+    _labour1  = _c(p?.costLabour1);
+    _labour2  = _c(p?.costLabour2);
+    _labour3  = _c(p?.costLabour3);
+    _labour4  = _c(p?.costLabour4);
+    _vettu1   = _c(p?.costVettu1);
+    _vettu2   = _c(p?.costVettu2);
+    _welding1 = _c(p?.costWelding1);
+    _welding2 = _c(p?.costWelding2);
+    _runner1  = _c(p?.costRunner1);
+    _runner2  = _c(p?.costRunner2);
+    _varai    = _c(p?.costVarai);
+    _polish1  = _c(p?.costPolish1);
+    _polish2  = _c(p?.costPolish2);
+    _spinner1 = _c(p?.costSpinner1);
+    _spinner2 = _c(p?.costSpinner2);
   }
+
+  TextEditingController _c(double? v) =>
+      TextEditingController(text: (v != null && v > 0) ? v.toString() : '');
 
   @override
   void dispose() {
-    for (final c in [_name,_category,_padii,_weightG,_sellPrice,
-      _labour,_plasma,_vettu,_welding,_runner,_varai,_polish,_material]) {
-      c.dispose();
-    }
+    for (final c in [_name, _category, _padii, _weightG, _sellPrice,
+        _material, _plasma, _labour1, _labour2, _labour3, _labour4,
+        _vettu1, _vettu2, _welding1, _welding2, _runner1, _runner2,
+        _varai, _polish1, _polish2, _spinner1, _spinner2]) c.dispose();
     super.dispose();
   }
 
-double _v(TextEditingController c) =>
-    double.tryParse(c.text) ?? 0;
+  double _v(TextEditingController c) => double.tryParse(c.text.trim()) ?? 0;
 
+  // Total cost per piece
   double get _totalCost =>
-      (_v(_labour) + _v(_plasma) + _v(_vettu) + _v(_welding) +
-       _v(_runner) + _v(_varai) + _v(_polish) + _v(_material));
+      _v(_material)  + _v(_plasma)   +
+      _v(_labour1)   + _v(_labour2)  + _v(_labour3)  + _v(_labour4)  +
+      _v(_vettu1)    + _v(_vettu2)   +
+      _v(_welding1)  + _v(_welding2) +
+      _v(_runner1)   + _v(_runner2)  +
+      _v(_varai)     +
+      _v(_polish1)   + _v(_polish2)  +
+      _v(_spinner1)  + _v(_spinner2);
 
-  // double _v(TextEditingController c) => double.tryParse(c.text) ?? 0;
-
+  // Live profit preview
   double get _profitPreview {
     final wg   = int.tryParse(_weightG.text) ?? 1;
     final sell = double.tryParse(_sellPrice.text) ?? 0;
-    final cpk  = _totalCost * (1000 / wg);
+    // costPerKg = totalCostPerProduct * (1000 / weightG)
+    final cpk  = _totalCost * (1000.0 / wg);
     final ppk  = sell - cpk;
-    return _soldByPiece ? ppk * (wg / 1000) : ppk;
+    return _soldByPiece ? ppk * (wg / 1000.0) : ppk;
   }
 
   Future<void> _save() async {
@@ -330,36 +357,45 @@ double _v(TextEditingController c) =>
     setState(() => _saving = true);
 
     final product = Product(
-      id:              widget.product?.id,
-      name:            _name.text.trim(),
-      category:        _category.text.trim(),
-      padii:           _padii.text.trim(),
-      productWeightG:  int.tryParse(_weightG.text) ?? 0,
-      sellPricePerKg:  double.tryParse(_sellPrice.text) ?? 0,
-      soldByPiece:     _soldByPiece,
-      unit:            _soldByPiece ? 'pcs' : 'kg',
-      costLabour:      _v(_labour),
-      costPlasma:      _v(_plasma),
-      costVettu:       _v(_vettu),
-      costWelding:     _v(_welding),
-      costRunner:      _v(_runner),
-      costVarai:       _v(_varai),
-      costPolish:      _v(_polish),
-      costMaterial:    _v(_material),
+      id:             widget.product?.id,
+      name:           _name.text.trim(),
+      category:       _category.text.trim(),
+      padii:          _padii.text.trim(),
+      productWeightG: int.tryParse(_weightG.text) ?? 0,
+      sellPricePerKg: double.tryParse(_sellPrice.text) ?? 0,
+      soldByPiece:    _soldByPiece,
+      unit:           _soldByPiece ? 'pcs' : 'kg',
+      costMaterial:   _v(_material),
+      costPlasma:     _v(_plasma),
+      costLabour1:    _v(_labour1),
+      costLabour2:    _v(_labour2),
+      costLabour3:    _v(_labour3),
+      costLabour4:    _v(_labour4),
+      costVettu1:     _v(_vettu1),
+      costVettu2:     _v(_vettu2),
+      costWelding1:   _v(_welding1),
+      costWelding2:   _v(_welding2),
+      costRunner1:    _v(_runner1),
+      costRunner2:    _v(_runner2),
+      costVarai:      _v(_varai),
+      costPolish1:    _v(_polish1),
+      costPolish2:    _v(_polish2),
+      costSpinner1:   _v(_spinner1),
+      costSpinner2:   _v(_spinner2),
     );
 
-    await FirebaseService.instance.saveProduct(product); // ← FIREBASE
+    await FirebaseService.instance.saveProduct(product);
     if (mounted) Navigator.pop(context);
   }
 
   @override
   Widget build(BuildContext context) {
-    final fmt     = NumberFormat('#,##0.00', 'en_IN');
-    final isEdit  = widget.product != null;
-    final profitColor = _profitPreview >= 0
-        ? const Color(0xFF1A6B2A) : Colors.red;
-    final profitBg = _profitPreview >= 0
-        ? const Color(0xFFC6EFCE) : const Color(0xFFFFCCCC);
+    final fmt      = NumberFormat('#,##0.00', 'en_IN');
+    final isEdit   = widget.product != null;
+    final profitOk = _profitPreview >= 0;
+    final profitColor = profitOk ? const Color(0xFF1A6B2A) : Colors.red;
+    final profitBg    = profitOk ? const Color(0xFFC6EFCE) : const Color(0xFFFFCCCC);
+    final wgLabel = _weightG.text.isEmpty ? 'piece' : '${_weightG.text}g';
 
     return Scaffold(
       appBar: AppBar(title: Text(isEdit ? 'Edit Product' : 'New Product')),
@@ -368,18 +404,20 @@ double _v(TextEditingController c) =>
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+
+            // ── Product Info ───────────────────────────────────────────────
             _sectionHeader('Product Info'),
-            _tf(_name,      'Product name *',   required: true),
-            _tf(_category,  'Category (SS / Brass / custom) *', required: true),
-            _tf(_padii,     'Padii / size label', hint: 'e.g. 1½ padii'),
-            _tf(_weightG,   'Weight per piece (grams) *',
+            _tf(_name,     'Product name *',                     required: true),
+            _tf(_category, 'Category (SS / Brass / custom) *',   required: true),
+            _tf(_padii,    'Padii / size label',  hint: 'e.g. 1½ padii'),
+            _tf(_weightG,  'Weight per piece (grams) *',
                 type: TextInputType.number, required: true, suffix: 'g'),
-            _tf(_sellPrice, 'Selling price per kg *',
+            _tf(_sellPrice,'Selling price per kg *',
                 type: TextInputType.number, required: true, suffix: 'Rs/kg'),
 
             // Sold by piece toggle
             Container(
-              margin: const EdgeInsets.only(bottom: 12),
+              margin: const EdgeInsets.only(bottom: 16),
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(color: const Color(0xFFF5F6FA),
                   borderRadius: BorderRadius.circular(10)),
@@ -388,7 +426,7 @@ double _v(TextEditingController c) =>
                   const Text('Sold by piece?',
                       style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
                   Text(_soldByPiece
-                      ? 'Profit calculated per piece (e.g. SS-IV)'
+                      ? 'Profit calculated per piece'
                       : 'Profit calculated per kg (default)',
                       style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
                 ])),
@@ -398,30 +436,76 @@ double _v(TextEditingController c) =>
               ]),
             ),
 
-            _sectionHeader('Cost Breakdown  (per ${_weightG.text.isEmpty ? "piece" : "${_weightG.text}g"})'),
+            // ── Cost Breakdown ─────────────────────────────────────────────
+            _sectionHeader('Cost Breakdown — per $wgLabel'),
 
+            // Material & Plasma (single each)
             Row(children: [
-              Expanded(child: _tf(_material, 'Material',  type: TextInputType.number)),
+              Expanded(child: _tf(_material, 'Material', type: TextInputType.number)),
               const SizedBox(width: 12),
-              Expanded(child: _tf(_labour,   'Labour',    type: TextInputType.number)),
-            ]),
-            Row(children: [
-              Expanded(child: _tf(_plasma,   'Plasma',    type: TextInputType.number)),
-              const SizedBox(width: 12),
-              Expanded(child: _tf(_vettu,    'Vettu',     type: TextInputType.number)),
-            ]),
-            Row(children: [
-              Expanded(child: _tf(_welding,  'Welding',   type: TextInputType.number)),
-              const SizedBox(width: 12),
-              Expanded(child: _tf(_runner,   'Runner',    type: TextInputType.number)),
-            ]),
-            Row(children: [
-              Expanded(child: _tf(_varai,    'Varai',     type: TextInputType.number)),
-              const SizedBox(width: 12),
-              Expanded(child: _tf(_polish,   'Polish',    type: TextInputType.number)),
+              Expanded(child: _tf(_plasma,   'Plasma',   type: TextInputType.number)),
             ]),
 
-            // Live profit preview
+            // Labour 1, 2
+            _subHeader('Labour'),
+            Row(children: [
+              Expanded(child: _tf(_labour1, 'Labour 1', type: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _tf(_labour2, 'Labour 2', type: TextInputType.number)),
+            ]),
+            Row(children: [
+              Expanded(child: _tf(_labour3, 'Labour 3', type: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _tf(_labour4, 'Labour 4', type: TextInputType.number)),
+            ]),
+
+            // Vettu 1, 2
+            _subHeader('Vettu'),
+            Row(children: [
+              Expanded(child: _tf(_vettu1, 'Vettu 1', type: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _tf(_vettu2, 'Vettu 2', type: TextInputType.number)),
+            ]),
+
+            // Welding 1, 2
+            _subHeader('Welding'),
+            Row(children: [
+              Expanded(child: _tf(_welding1, 'Welding 1', type: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _tf(_welding2, 'Welding 2', type: TextInputType.number)),
+            ]),
+
+            // Runner 1, 2
+            _subHeader('Runner'),
+            Row(children: [
+              Expanded(child: _tf(_runner1, 'Runner 1', type: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _tf(_runner2, 'Runner 2', type: TextInputType.number)),
+            ]),
+
+            // Varai (single)
+            _subHeader('Varai'),
+            _tf(_varai, 'Varai', type: TextInputType.number),
+
+            // Polish 1, 2
+            _subHeader('Polish'),
+            Row(children: [
+              Expanded(child: _tf(_polish1, 'Polish 1', type: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _tf(_polish2, 'Polish 2', type: TextInputType.number)),
+            ]),
+
+            // Spinner 1, 2
+            _subHeader('Spinner'),
+            Row(children: [
+              Expanded(child: _tf(_spinner1, 'Spinner 1', type: TextInputType.number)),
+              const SizedBox(width: 12),
+              Expanded(child: _tf(_spinner2, 'Spinner 2', type: TextInputType.number)),
+            ]),
+
+            const SizedBox(height: 4),
+
+            // ── Profit preview ─────────────────────────────────────────────
             Container(
               padding: const EdgeInsets.all(14),
               margin: const EdgeInsets.only(bottom: 16),
@@ -435,14 +519,16 @@ double _v(TextEditingController c) =>
                       style: const TextStyle(fontWeight: FontWeight.w600)),
                 ]),
                 const SizedBox(height: 4),
-                if (_weightG.text.isNotEmpty)
+                if (_weightG.text.isNotEmpty) ...[
                   Row(children: [
                     const Text('Cost per kg:'),
                     const Spacer(),
-                    Text('Rs ${fmt.format(_totalCost * (1000 / (int.tryParse(_weightG.text) ?? 1)))}',
+                    Text('Rs ${fmt.format(_totalCost * (1000.0 / (int.tryParse(_weightG.text) ?? 1)))}',
                         style: const TextStyle(fontWeight: FontWeight.w600)),
                   ]),
-                const Divider(height: 16),
+                  const SizedBox(height: 4),
+                ],
+                const Divider(height: 12),
                 Row(children: [
                   Text('Net profit per ${_soldByPiece ? "piece" : "kg"}:',
                       style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
@@ -451,9 +537,18 @@ double _v(TextEditingController c) =>
                       style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold,
                           color: profitColor)),
                 ]),
+                const SizedBox(height: 4),
+                Text(
+                  _soldByPiece
+                    ? 'Piece profit = (sell/kg - cost/kg) × ${_weightG.text.isEmpty ? "weight" : "${_weightG.text}"}g/1000'
+                    : 'Profit/kg = sell price − (total cost × 1000g ÷ ${_weightG.text.isEmpty ? "weight" : "${_weightG.text}g"})',
+                  style: const TextStyle(fontSize: 10, color: Color(0xFF888888)),
+                  textAlign: TextAlign.center,
+                ),
               ]),
             ),
 
+            // ── Save ──────────────────────────────────────────────────────
             SizedBox(
               width: double.infinity, height: 52,
               child: ElevatedButton(
@@ -482,11 +577,16 @@ double _v(TextEditingController c) =>
     child: Text(text, style: const TextStyle(fontSize: 14,
         fontWeight: FontWeight.bold, color: Color(0xFF1F4E79))));
 
+  Widget _subHeader(String text) => Padding(
+    padding: const EdgeInsets.only(bottom: 8, top: 2),
+    child: Text(text, style: const TextStyle(fontSize: 12,
+        fontWeight: FontWeight.w600, color: Color(0xFF555555))));
+
   Widget _tf(TextEditingController ctrl, String label,
       {bool required = false, String? hint, String? suffix,
        TextInputType type = TextInputType.text}) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 10),
       child: TextFormField(
         controller: ctrl,
         keyboardType: type,
@@ -494,6 +594,7 @@ double _v(TextEditingController c) =>
         decoration: InputDecoration(
           labelText: label, hintText: hint, suffixText: suffix,
           filled: true, fillColor: const Color(0xFFF5F6FA),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
               borderSide: BorderSide.none),
         ),

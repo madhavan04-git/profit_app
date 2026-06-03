@@ -1,9 +1,7 @@
 // lib/screens/home_screen.dart
-// FIXES:
-// 1. Products and buyers loaded once on init — not on every "Add Sale" tap
-// 2. Add Sale sheet opens instantly from cache
-// 3. Sales list uses local state — no stream rebuild lag
-// 4. Buyer total price editable per sale
+// My Pattarii — Home screen
+// Key fix: Sale stores product.workerRatesPerKg so monthly salary is accurate.
+// Logout button added in AppBar.
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -26,19 +24,15 @@ class _HomeScreenState extends State<HomeScreen> {
   final _svc = FirebaseService.instance;
   DateTime _date = DateTime.now();
   List<Sale> _sales = [];
-  List<Product> _products = []; // cached — loaded once
-  List<Buyer> _buyers = [];     // cached — loaded once
+  List<Product> _products = [];
+  List<Buyer> _buyers = [];
   double _dayProfit = 0, _monthProfit = 0;
   bool _loading = true;
   int _navIndex = 0;
 
   @override
-  void initState() {
-    super.initState();
-    _loadAll();
-  }
+  void initState() { super.initState(); _loadAll(); }
 
-  // Load products + buyers once, sales for today — all in parallel
   Future<void> _loadAll() async {
     setState(() => _loading = true);
     final results = await Future.wait([
@@ -58,7 +52,6 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  // Only reload sales — products/buyers already cached
   Future<void> _reloadSales() async {
     final results = await Future.wait([
       _svc.salesForDate(_date),
@@ -76,29 +69,15 @@ class _HomeScreenState extends State<HomeScreen> {
     final d = await showDatePicker(
         context: context, initialDate: _date,
         firstDate: DateTime(2024), lastDate: DateTime.now());
-    if (d != null) {
-      setState(() => _date = d);
-      _reloadSales();
-    }
+    if (d != null) { setState(() => _date = d); _reloadSales(); }
   }
 
-  // Instant — products already loaded
-  void _addSale()async  {
-    print("Products loaded: ${_products.length}");
-print("Buyers loaded: ${_buyers.length}");
-    // if (_products.isEmpty) {
-    //   ScaffoldMessenger.of(context).showSnackBar  (
-    //       const SnackBar(content: Text('Loading products... please wait')));
-    //   return;
-    // }
+  void _addSale() {
     showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
+      context: context, isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => AddSaleSheet(
-        date: _date,
-        products: _products,
-        buyers: _buyers,
+        date: _date, products: _products, buyers: _buyers,
         onSaved: _reloadSales,
       ),
     );
@@ -117,10 +96,26 @@ print("Buyers loaded: ${_buyers.length}");
         ],
       ),
     );
-    if (ok == true) {
-      await _svc.deleteSale(sale.id!);
-      _reloadSales();
-    }
+    if (ok == true) { await _svc.deleteSale(sale.id!); _reloadSales(); }
+  }
+
+  Future<void> _confirmLogout() async {
+    final ok = await showDialog<bool>(context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Logout?'),
+        content: const Text('Are you sure you want to logout from My Pattarii?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red,
+                foregroundColor: Colors.white),
+            child: const Text('Logout'),
+          ),
+        ],
+      ));
+    if (ok == true) await _svc.logout();
   }
 
   @override
@@ -135,8 +130,7 @@ print("Buyers loaded: ${_buyers.length}");
               onPressed: _addSale,
               icon: const Icon(Icons.add),
               label: const Text('Add Sale', style: TextStyle(fontWeight: FontWeight.bold)),
-              backgroundColor: const Color(0xFF1F4E79),
-              foregroundColor: Colors.white)
+              backgroundColor: const Color(0xFF1F4E79), foregroundColor: Colors.white)
           : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _navIndex,
@@ -157,25 +151,40 @@ print("Buyers loaded: ${_buyers.length}");
   }
 
   Widget _buildHome() {
-    final fmt = NumberFormat('#,##0', 'en_IN');
+    final fmt  = NumberFormat('#,##0', 'en_IN');
     final user = _svc.currentUser;
     final top  = MediaQuery.of(context).padding.top;
 
     return Column(children: [
-      // ── Header ─────────────────────────────────────────────────────────
+      // ── Header ────────────────────────────────────────────────────────
       Container(
         color: Colors.white,
         padding: EdgeInsets.fromLTRB(16, top + 10, 16, 14),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
+            Container(
+  width: 44,
+  height: 44,
+  child: ClipRRect(
+    borderRadius: BorderRadius.circular(9),
+    child: Image.asset(
+      'assets/icon/logo4.png',
+      fit: BoxFit.contain,
+      errorBuilder: (context, error, stackTrace) {
+        return const Icon(Icons.image_not_supported, size: 20);
+      },
+    ),
+  ),
+),
+            const SizedBox(width: 8),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text('Hello, ${user?.displayName?.split(' ').first ?? 'there'}!',
-                  style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold,
                       color: Color(0xFF1F4E79))),
               Text(DateUtils.isSameDay(_date, DateTime.now())
                   ? 'Today — ${DateFormat('dd MMM yyyy').format(_date)}'
                   : DateFormat('EEEE, dd MMM yyyy').format(_date),
-                  style: const TextStyle(fontSize: 12, color: Color(0xFF888888))),
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
             ]),
             const Spacer(),
             _topBtn(Icons.inventory_2_outlined, 'Products', () => Navigator.push(
@@ -184,8 +193,10 @@ print("Buyers loaded: ${_buyers.length}");
             _topBtn(Icons.bar_chart_rounded, 'Monthly', () => Navigator.push(
                 context, MaterialPageRoute(builder: (_) => const MonthlyScreen()))
                 .then((_) => _reloadSales())),
-            _topBtn(Icons.settings_outlined, 'Settings', () => Navigator.push(
-                context, MaterialPageRoute(builder: (_) => const SettingsScreen()))),
+            // _topBtn(Icons.settings_outlined, 'Settings', () => Navigator.push(
+            //     context, MaterialPageRoute(builder: (_) => const SettingsScreen()))),
+            // Logout button
+            _topBtn(Icons.logout, 'Logout', _confirmLogout, color: Colors.red.shade400),
           ]),
           const SizedBox(height: 14),
           Row(children: [
@@ -195,22 +206,18 @@ print("Buyers loaded: ${_buyers.length}");
             const SizedBox(width: 10),
             Expanded(child: _miniCard('This month',
                 'Rs ${fmt.format(_monthProfit)}',
-                _monthProfit >= 30000 ? const Color(0xFF1A6B2A) : const Color(0xFF7B4F06),
-                _monthProfit >= 30000 ? const Color(0xFFC6EFCE) : const Color(0xFFFFF3CD))),
+                const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
             const SizedBox(width: 10),
             GestureDetector(
               onTap: _pickDate,
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                decoration: BoxDecoration(
-                    border: Border.all(color: const Color(0xFFDDDDDD)),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(color: const Color(0xFFF5F6FA),
                     borderRadius: BorderRadius.circular(10)),
-                child: Column(children: [
-                  const Icon(Icons.calendar_today, size: 18, color: Color(0xFF1F4E79)),
-                  const SizedBox(height: 2),
-                  Text(DateFormat('dd MMM').format(_date),
-                      style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                          color: Color(0xFF1F4E79))),
+                child: const Column(children: [
+                  Icon(Icons.calendar_today, size: 18, color: Color(0xFF1F4E79)),
+                  SizedBox(height: 3),
+                  Text('Date', style: TextStyle(fontSize: 10, color: Color(0xFF888888))),
                 ]),
               ),
             ),
@@ -218,233 +225,153 @@ print("Buyers loaded: ${_buyers.length}");
         ]),
       ),
 
-      // ── Month progress ──────────────────────────────────────────────────
-      _MonthBar(monthProfit: _monthProfit, date: _date),
-
-      // ── Sales list ──────────────────────────────────────────────────────
-      if (_loading)
-        const Expanded(child: Center(child: CircularProgressIndicator()))
-      else if (_sales.isEmpty)
-        Expanded(child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.receipt_long_outlined, size: 64, color: Colors.grey.shade300),
-          const SizedBox(height: 12),
-          Text('No sales yet', style: TextStyle(fontSize: 18,
-              color: Colors.grey.shade400, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 6),
-          Text('Tap + Add Sale below', style: TextStyle(
-              fontSize: 13, color: Colors.grey.shade400)),
-        ])))
-      else
-        Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
-            itemCount: _sales.length,
-            itemBuilder: (_, i) {
-              final s = _sales[i];
-              return _SaleTile(sale: s, onDelete: () => _deleteSale(s));
-            },
-          ),
-        ),
+      // ── Sales list ─────────────────────────────────────────────────────
+      Expanded(
+        child: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : _sales.isEmpty
+                ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.receipt_long_outlined, size: 72, color: Colors.grey.shade300),
+                    const SizedBox(height: 12),
+                    Text('No sales for ${DateFormat('dd MMM').format(_date)}',
+                        style: const TextStyle(fontSize: 16, color: Colors.grey)),
+                    const SizedBox(height: 6),
+                    const Text('Tap + Add Sale to record a sale',
+                        style: TextStyle(fontSize: 12, color: Colors.grey)),
+                  ]))
+                : ListView.builder(
+                    padding: const EdgeInsets.all(16),
+                    itemCount: _sales.length,
+                    itemBuilder: (_, i) {
+                      final s = _sales[i];
+                      final fmt2 = NumberFormat('#,##0.00', 'en_IN');
+                      return Container(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        decoration: BoxDecoration(color: Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: const Color(0xFFEEEEEE))),
+                        child: ListTile(
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 14, vertical: 6),
+                          leading: Container(width: 42, height: 42,
+                            decoration: BoxDecoration(
+                              color: s.productCategory == 'SS'
+                                  ? const Color(0xFFE6F1FB) : const Color(0xFFFAEEDA),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Center(child: Text(s.productCategory,
+                                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold,
+                                    color: s.productCategory == 'SS'
+                                        ? const Color(0xFF1F4E79) : const Color(0xFF7B4F06))))),
+                          title: Text(s.productName,
+                              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                          subtitle: Text(
+                            '${s.qty % 1 == 0 ? s.qty.toInt() : s.qty.toStringAsFixed(1)} '
+                            '${s.productCategory == 'SS' ? 'kg' : 'kg'}'
+                            '${s.buyerName != null ? '  •  ${s.buyerName}' : ''}',
+                            style: const TextStyle(fontSize: 12, color: Color(0xFF888888))),
+                          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Text('Rs ${fmt2.format(s.profit)}',
+                                style: const TextStyle(fontWeight: FontWeight.bold,
+                                    fontSize: 14, color: Color(0xFF1A6B2A))),
+                            const SizedBox(width: 4),
+                            IconButton(icon: const Icon(Icons.delete_outline,
+                                size: 18, color: Color(0xFFCC4444)),
+                                onPressed: () => _deleteSale(s),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints()),
+                          ]),
+                        ),
+                      );
+                    },
+                  ),
+      ),
     ]);
   }
 
-  Widget _topBtn(IconData icon, String label, VoidCallback onTap) =>
-      InkWell(onTap: onTap, borderRadius: BorderRadius.circular(8),
-        child: Padding(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
-          child: Column(children: [
-            Icon(icon, size: 22, color: const Color(0xFF1F4E79)),
-            Text(label, style: const TextStyle(fontSize: 9, color: Color(0xFF888888))),
-          ])));
+  Widget _topBtn(IconData icon, String label, VoidCallback onTap,
+      {Color? color}) =>
+      InkWell(onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(padding: const EdgeInsets.all(6),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 20, color: color ?? const Color(0xFF1F4E79)),
+            Text(label, style: TextStyle(fontSize: 9,
+                color: color ?? const Color(0xFF1F4E79))),
+          ])),
+      );
 
-  Widget _miniCard(String label, String value, Color color, Color bg) =>
+  Widget _miniCard(String label, String value, Color textColor, Color bg) =>
       Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(10)),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(label, style: TextStyle(fontSize: 10, color: color.withOpacity(0.7))),
+          Text(label, style: TextStyle(fontSize: 10,
+              color: textColor.withOpacity(0.7))),
           const SizedBox(height: 2),
-          Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: color)),
+          Text(value, style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold,
+              color: textColor), overflow: TextOverflow.ellipsis),
         ]),
       );
 }
 
-// ── Month bar — takes pre-loaded value, no extra fetch ────────────────────────
-class _MonthBar extends StatelessWidget {
-  final double monthProfit;
-  final DateTime date;
-  const _MonthBar({required this.monthProfit, required this.date});
-
-  @override
-  Widget build(BuildContext context) {
-    const target = 30000.0;
-    final pct = (monthProfit / target).clamp(0.0, 1.0);
-    final fmt = NumberFormat('#,##0', 'en_IN');
-    return Container(
-      color: Colors.white,
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Divider(height: 1),
-        const SizedBox(height: 8),
-        Row(children: [
-          Text(DateFormat('MMM yyyy').format(date),
-              style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
-          const Spacer(),
-          Text('Rs ${fmt.format(monthProfit)} / 30,000',
-              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600,
-                  color: Color(0xFF1F4E79))),
-        ]),
-        const SizedBox(height: 5),
-        ClipRRect(borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: pct, minHeight: 6,
-              backgroundColor: const Color(0xFFEEEEEE),
-              valueColor: AlwaysStoppedAnimation(
-                  pct >= 1.0 ? const Color(0xFF639922)
-                      : pct >= 0.7 ? const Color(0xFFEF9F27)
-                      : const Color(0xFF378ADD)),
-            )),
-        const SizedBox(height: 4),
-        Text(
-          pct >= 1.0
-              ? '✓ Target reached! +Rs ${fmt.format(monthProfit - target)} extra'
-              : 'Rs ${fmt.format(target - monthProfit)} more needed',
-          style: TextStyle(fontSize: 10,
-              color: pct >= 1.0 ? const Color(0xFF1A6B2A) : const Color(0xFF888888)),
-        ),
-      ]),
-    );
-  }
-}
-
-// ── Sale tile ─────────────────────────────────────────────────────────────────
-class _SaleTile extends StatelessWidget {
-  final Sale sale;
-  final VoidCallback onDelete;
-  const _SaleTile({required this.sale, required this.onDelete});
-
-  @override
-  Widget build(BuildContext context) {
-    final isSS  = sale.productCategory == 'SS';
-    final color = isSS ? const Color(0xFF1F4E79) : const Color(0xFF7B4F06);
-    final bg    = isSS ? const Color(0xFFE6F1FB) : const Color(0xFFFAEEDA);
-    final fmt   = NumberFormat('#,##0.00', 'en_IN');
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04),
-              blurRadius: 4, offset: const Offset(0, 2))]),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-        leading: Container(width: 42, height: 42,
-            decoration: BoxDecoration(color: bg, shape: BoxShape.circle),
-            child: Center(child: Text(
-                sale.productCategory.length >= 2
-                    ? sale.productCategory.substring(0, 2)
-                    : sale.productCategory,
-                style: TextStyle(color: color,
-                    fontWeight: FontWeight.bold, fontSize: 12)))),
-        title: Text(sale.productName,
-            style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
-        subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(
-            '${sale.qty % 1 == 0 ? sale.qty.toInt() : sale.qty.toStringAsFixed(1)}'
-            ' ${sale.qty == 1 ? "unit" : "units"}  •  '
-            'Rs ${fmt.format(sale.salePrice)}/kg',
-            style: const TextStyle(fontSize: 12, color: Color(0xFF888888))),
-          if (sale.buyerName != null && sale.buyerName!.isNotEmpty)
-            Text('Buyer: ${sale.buyerName}',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF1F4E79))),
-        ]),
-        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-          Column(mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end, children: [
-            Text('Rs ${fmt.format(sale.profit)}',
-                style: const TextStyle(fontWeight: FontWeight.bold,
-                    color: Color(0xFF1A6B2A), fontSize: 15)),
-            const Text('profit', style: TextStyle(fontSize: 10, color: Color(0xFF888888))),
-          ]),
-          const SizedBox(width: 6),
-          IconButton(icon: const Icon(Icons.delete_outline, size: 20, color: Color(0xFFCC4444)),
-              onPressed: onDelete, padding: EdgeInsets.zero,
-              constraints: const BoxConstraints(minWidth: 28, minHeight: 28)),
-        ]),
-      ),
-    );
-  }
-}
-
 // ══════════════════════════════════════════════════════════════════════════════
-// ADD SALE SHEET — instant open (products pre-cached), custom price per buyer
+// ADD SALE SHEET
 // ══════════════════════════════════════════════════════════════════════════════
 class AddSaleSheet extends StatefulWidget {
   final DateTime date;
   final List<Product> products;
   final List<Buyer> buyers;
   final VoidCallback onSaved;
-  const AddSaleSheet({super.key, required this.date,
-      required this.products, required this.buyers, required this.onSaved});
-  @override
-  State<AddSaleSheet> createState() => _AddSaleSheetState();
+  const AddSaleSheet({super.key, required this.date, required this.products,
+      required this.buyers, required this.onSaved});
+  @override State<AddSaleSheet> createState() => _AddSaleSheetState();
 }
 
 class _AddSaleSheetState extends State<AddSaleSheet> {
   Product? _product;
-  Buyer?   _buyer;
+  Buyer? _buyer;
   final _qty       = TextEditingController();
   final _priceCtrl = TextEditingController();
   bool _customPrice = false;
-  double _profit = 0;
-  double _effectivePrice = 0;
+  double _profit = 0, _effectivePrice = 0;
   bool _saving = false;
-
-  @override
-  void dispose() {
-    _qty.dispose();
-    _priceCtrl.dispose();
-    super.dispose();
-  }
 
   void _selectProduct(Product? p) {
     setState(() {
       _product = p;
-      if (p != null) {
-        _effectivePrice = p.sellPricePerKg;
-        _priceCtrl.text = p.sellPricePerKg.toStringAsFixed(0);
-      }
+      _effectivePrice = p?.sellPricePerKg ?? 0;
+      _priceCtrl.text = _effectivePrice.toStringAsFixed(0);
     });
     _recalc();
   }
 
   void _recalc() {
+    if (_product == null) { setState(() => _profit = 0); return; }
     final qty = double.tryParse(_qty.text) ?? 0;
-    if (_product == null || qty == 0) { setState(() => _profit = 0); return; }
-
-    final price = _customPrice
-        ? (double.tryParse(_priceCtrl.text) ?? _product!.sellPricePerKg)
-        : _product!.sellPricePerKg;
-
-    final profitPerKg  = price - _product!.costPerKg;
-    final profitPerUnit = _product!.soldByPiece
-        ? profitPerKg * (_product!.productWeightG / 1000)
-        : profitPerKg;
-
-    setState(() {
-      _effectivePrice = price;
-      _profit = qty * profitPerUnit;
-    });
+    final p   = _product!;
+    double profit;
+    if (_customPrice) {
+      final customPricePerKg = double.tryParse(_priceCtrl.text) ?? p.sellPricePerKg;
+      _effectivePrice = customPricePerKg;
+      // Recalculate profit with custom sell price, same costs
+      final cpk        = p.costPerKg;
+      final profitPerKg = customPricePerKg - cpk;
+      profit = p.soldByPiece
+          ? qty * profitPerKg * (p.productWeightG / 1000.0)
+          : qty * profitPerKg;
+    } else {
+      _effectivePrice = p.sellPricePerKg;
+      profit = p.profitForQty(qty);
+    }
+    setState(() => _profit = profit);
   }
 
   Future<void> _save() async {
-    if (_product == null || _saving) return;
-    final qty = double.tryParse(_qty.text) ?? 0;
-    if (qty <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Please enter quantity')));
-      return;
-    }
+    if (_product == null || _qty.text.isEmpty) return;
     setState(() => _saving = true);
-    await FirebaseService.instance.addSale(Sale(
+    final qty = double.tryParse(_qty.text) ?? 0;
+    final sale = Sale(
       productId:       _product!.id!,
       productName:     _product!.name,
       productCategory: _product!.category,
@@ -454,7 +381,10 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       salePrice:       _effectivePrice,
       profit:          _profit,
       date:            widget.date,
-    ));
+      // Store per-kg rates for this product so monthly salary calc is correct
+      workerRatesPerKg: _product!.workerRatesPerKg,
+    );
+    await FirebaseService.instance.addSale(sale);
     widget.onSaved();
     if (mounted) Navigator.pop(context);
   }
@@ -473,7 +403,6 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
         Container(width: 40, height: 4, margin: const EdgeInsets.only(bottom: 16),
             decoration: BoxDecoration(color: Colors.grey.shade300,
                 borderRadius: BorderRadius.circular(2))),
-
         Row(children: [
           const Text('Add Sale',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
@@ -483,18 +412,18 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
         ]),
         const SizedBox(height: 16),
 
-        // ── Product ──────────────────────────────────────────────────────
+        // Product
         _DropField<Product>(
           value: _product,
           hint: 'Select product *',
           items: widget.products,
           label:   (p) => '${p.category} — ${p.name}',
-          caption: (p) => 'Profit Rs ${fmt.format(p.profitPerUnit)}/${p.unit}',
+          caption: (p) => 'Rs ${fmt.format(p.profitPerUnit)}/${p.unit}',
           onChanged: _selectProduct,
         ),
         const SizedBox(height: 10),
 
-        // Info bar
+        // Product info bar
         if (_product != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
@@ -512,7 +441,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
             ]),
           ),
 
-        // ── Buyer (optional) ─────────────────────────────────────────────
+        // Buyer
         _DropField<Buyer?>(
           value: _buyer,
           hint: 'Select buyer (optional)',
@@ -523,7 +452,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
         ),
         const SizedBox(height: 10),
 
-        // ── Change price for this buyer? ──────────────────────────────────
+        // Custom price toggle
         if (_product != null)
           Row(children: [
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -532,11 +461,9 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
               Text('Default: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg',
                   style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
             ])),
-            Switch(
-              value: _customPrice,
-              onChanged: (v) { setState(() => _customPrice = v); _recalc(); },
-              activeColor: const Color(0xFF1F4E79),
-            ),
+            Switch(value: _customPrice,
+                onChanged: (v) { setState(() => _customPrice = v); _recalc(); },
+                activeColor: const Color(0xFF1F4E79)),
           ]),
 
         if (_customPrice && _product != null)
@@ -551,15 +478,12 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
                 filled: true, fillColor: const Color(0xFFFFF8E1),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
                     borderSide: BorderSide.none),
-                focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                    borderSide: const BorderSide(color: Color(0xFFEF9F27))),
               ),
               onChanged: (_) => _recalc(),
             ),
           ),
 
-        // ── Quantity ──────────────────────────────────────────────────────
+        // Quantity
         TextField(
           controller: _qty,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
@@ -574,7 +498,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
         ),
         const SizedBox(height: 14),
 
-        // ── Profit preview ────────────────────────────────────────────────
+        // Profit preview
         if (_profit != 0)
           Container(
             width: double.infinity,
@@ -595,7 +519,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
           ),
         const SizedBox(height: 14),
 
-        // ── Save ──────────────────────────────────────────────────────────
+        // Save
         SizedBox(
           width: double.infinity, height: 52,
           child: ElevatedButton(
