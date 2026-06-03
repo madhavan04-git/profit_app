@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "727808436359",
+    "project_id": "profittracker-2df26",
+    "storage_bucket": "profittracker-2df26.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:727808436359:android:346950fe8ceaf0dc737022",
+        "android_client_info": {
+          "package_name": "com.madhavan.profit_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyApq1jXV3gyq6c4qWk401ICH7pCScfnN5U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
