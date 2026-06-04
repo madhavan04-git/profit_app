@@ -1,12 +1,11 @@
 // lib/services/firebase_service.dart
 // My Pattarii
 // KEY FEATURES:
-// 1. Device license check — app cannot be used on unlicensed devices
-// 2. Worker salary calculated PER PRODUCT from sales (not attendance alone)
-//    e.g. 20 kg sold → Plasma worker earns: plasma_rate_per_kg × 20
-// 3. Logout support
-// 4. All 17 cost fields: Material, Plasma, Labour 1-4, Vettu 1-2,
-//    Welding 1-2, Runner 1-2, Varai, Polish 1-2, Spinner 1-2
+// 1. Device license check
+// 2. Worker salary calculated PER PRODUCT from sales
+// 3. Plasma 1 & Plasma 2 as separate cost fields
+// 4. Buyer transactions: advance / payment / latePayment / refund
+// 5. Worker transactions: salaryPaid / advance / bonus / deduction
 
 import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -28,8 +27,7 @@ class FirebaseService {
       _db.collection('users').doc(uid).collection(name);
 
   // ══════════════════════════════════════════════════════════════════════════
-  // DEVICE LICENSE — prevents sharing without permission
-  // Each Firebase account is locked to the device(s) it first logged in on.
+  // DEVICE LICENSE
   // ══════════════════════════════════════════════════════════════════════════
 
   Future<String> _getDeviceId() async {
@@ -43,7 +41,6 @@ class FirebaseService {
     } catch (_) { return 'unknown'; }
   }
 
-  /// Register current device to this account (called on login/register)
   Future<void> registerDevice() async {
     final deviceId = await _getDeviceId();
     final userDoc  = _db.collection('users').doc(uid);
@@ -52,12 +49,10 @@ class FirebaseService {
     final List<dynamic> devices = data['registeredDevices'] ?? [];
     if (!devices.contains(deviceId)) {
       devices.add(deviceId);
-      await userDoc.set({'registeredDevices': devices});
+      await userDoc.set({'registeredDevices': devices}, SetOptions(merge: true));
     }
   }
 
-  /// Returns true if current device is licensed for this account.
-  /// On first login (no devices registered), auto-registers and returns true.
   Future<bool> isDeviceLicensed() async {
     try {
       final deviceId = await _getDeviceId();
@@ -77,24 +72,16 @@ class FirebaseService {
   // ══════════════════════════════════════════════════════════════════════════
 
   Future<UserCredential> register(String email, String password, String name) async {
-    print("AUTH SUCCESS");
     final cred = await _auth.createUserWithEmailAndPassword(
         email: email, password: password);
     await cred.user!.updateDisplayName(name);
-
     final deviceId = await _getDeviceId();
-
-    print("DISPLAY NAME UPDATED");
-
     await _db.collection('users').doc(cred.user!.uid).set({
       'name': name, 'email': email, 'target': 30000,
       'createdAt': FieldValue.serverTimestamp(),
       'registeredDevices': [deviceId],
     });
     await _seedProducts(cred.user!.uid);
-
-     print("FIRESTORE SUCCESS");
-
     return cred;
   }
 
@@ -106,9 +93,7 @@ class FirebaseService {
     return cred;
   }
 
-  /// Logout — signs out from Firebase Auth
   Future<void> logout() => _auth.signOut();
-
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
   Future<void> _ensureSeeded(String uid) async {
@@ -124,41 +109,141 @@ class FirebaseService {
     await batch.commit();
   }
 
+ // Add these methods to your FirebaseService class in firebase_service.dart
+
+// ══════════════════════════════════════════════════════════════════════════
+// SIMPLE TRANSACTIONS (Credit/Debit) - Add this section
+// ══════════════════════════════════════════════════════════════════════════
+
+// Get buyer simple transactions (payments received)
+Future<List<SimpleTransaction>> getBuyerSimpleTransactions(String buyerId) async {
+  final q = await _col('simpleTransactions')
+      .where('buyerId', isEqualTo: buyerId)
+      .get();
+  return q.docs.map((d) => SimpleTransaction.fromMap(d.id, d.data())).toList();
+}
+
+// Stream of all buyer simple transactions
+Stream<List<SimpleTransaction>> allBuyerSimpleTransactionsStream() {
+  return _col('simpleTransactions')
+      .snapshots()
+      .map((s) => s.docs
+          .map((d) => SimpleTransaction.fromMap(d.id, d.data()))
+          .toList());
+}
+
+// Stream for specific buyer
+Stream<List<SimpleTransaction>> buyerSimpleTransactionsStream(String buyerId) {
+  return _col('simpleTransactions')
+      .where('buyerId', isEqualTo: buyerId)
+      .snapshots()
+      .map((s) => s.docs
+          .map((d) => SimpleTransaction.fromMap(d.id, d.data()))
+          .toList());
+}
+
+// Add simple transaction (Credit or Debit)
+Future<void> addSimpleTransaction(SimpleTransaction tx) async {
+  await _col('simpleTransactions').add(tx.toMap());
+}
+
+// Delete simple transaction
+Future<void> deleteSimpleTransaction(String id) async {
+  await _col('simpleTransactions').doc(id).delete();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// WORKER SIMPLE TRANSACTIONS - Add this section
+// ══════════════════════════════════════════════════════════════════════════
+
+// Get worker simple transactions (payments made to worker)
+Future<List<WorkerSimpleTransaction>> getWorkerSimpleTransactions(String workerId) async {
+  final q = await _col('workerSimpleTransactions')
+      .where('workerId', isEqualTo: workerId)
+      .get();
+  return q.docs.map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data())).toList();
+}
+
+// Stream of all worker simple transactions
+Stream<List<WorkerSimpleTransaction>> allWorkerSimpleTransactionsStream() {
+  return _col('workerSimpleTransactions')
+      .snapshots()
+      .map((s) => s.docs
+          .map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data()))
+          .toList());
+}
+
+// Stream for specific worker
+Stream<List<WorkerSimpleTransaction>> workerSimpleTransactionsStream(String workerId) {
+  return _col('workerSimpleTransactions')
+      .where('workerId', isEqualTo: workerId)
+      .snapshots()
+      .map((s) => s.docs
+          .map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data()))
+          .toList());
+}
+
+// Add worker simple transaction
+Future<void> addWorkerSimpleTransaction(WorkerSimpleTransaction tx) async {
+  await _col('workerSimpleTransactions').add(tx.toMap());
+}
+
+// Delete worker simple transaction
+Future<void> deleteWorkerSimpleTransaction(String id) async {
+  await _col('workerSimpleTransactions').doc(id).delete();
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// GET ALL SALES - Add this method if not present
+// ══════════════════════════════════════════════════════════════════════════
+
+
+// Get all sales (for buyer totals calculation)
+Future<List<Sale>> getAllSales() async {
+  final q = await _col('sales').get();
+  return q.docs.map((d) => Sale.fromMap(d.id, d.data())).toList();
+}
+
+
+
+
+
+
   static final _defaultProducts = [
-    Product(name:'SS-I (1½ padii)',     category:'SS',    padii:'1½ padii',
+    Product(name:'SS-I (1½ padii)',      category:'SS',    padii:'1½ padii',
         productWeightG:500, sellPricePerKg:230,
-        costLabour1:7, costPlasma:12.5, costWelding1:4, costRunner1:8,
+        costLabour1:7, costPlasma1:12.5, costWelding1:4, costRunner1:8,
         costVarai:8, costPolish1:44),
-    Product(name:'SS-II (1 padii)',     category:'SS',    padii:'1 padii',
+    Product(name:'SS-II (1 padii)',      category:'SS',    padii:'1 padii',
         productWeightG:300, sellPricePerKg:230,
-        costLabour1:3.5, costPlasma:6.5, costWelding1:2, costRunner1:4,
+        costLabour1:3.5, costPlasma1:6.5, costWelding1:2, costRunner1:4,
         costVarai:4, costPolish1:23),
-    Product(name:'SS-III (½ padii)',    category:'SS',    padii:'½ padii',
+    Product(name:'SS-III (½ padii)',     category:'SS',    padii:'½ padii',
         productWeightG:300, sellPricePerKg:230,
-        costLabour1:3.5, costPlasma:6.5, costWelding1:2, costRunner1:4,
+        costLabour1:3.5, costPlasma1:6.5, costWelding1:2, costRunner1:4,
         costVarai:4, costPolish1:23),
-    Product(name:'SS-IV (¼ piece)',     category:'SS',    padii:'¼ piece',
+    Product(name:'SS-IV (¼ piece)',      category:'SS',    padii:'¼ piece',
         productWeightG:100, sellPricePerKg:800,
         soldByPiece:true, unit:'pcs',
-        costMaterial:17, costLabour1:3.5, costPlasma:6.5,
+        costMaterial:17, costLabour1:3.5, costPlasma1:6.5,
         costWelding1:2, costRunner1:4, costVarai:4, costPolish1:23),
-    Product(name:'BR-II (1½ padii)',    category:'Brass', padii:'1½ padii',
+    Product(name:'BR-II (1½ padii)',     category:'Brass', padii:'1½ padii',
         productWeightG:700, sellPricePerKg:350,
         costLabour1:10, costVettu1:7, costWelding1:10,
         costRunner1:10, costVarai:10, costPolish1:58),
-    Product(name:'BR-III (1½+¼ padii)',category:'Brass', padii:'1½+¼ padii',
+    Product(name:'BR-III (1½+¼ padii)', category:'Brass', padii:'1½+¼ padii',
         productWeightG:900, sellPricePerKg:350,
         costLabour1:10, costVettu1:8, costWelding1:18,
         costRunner1:15, costVarai:15, costPolish1:82),
-    Product(name:'BR-IV (¼ kg)',        category:'Brass', padii:'¼ kg',
+    Product(name:'BR-IV (¼ kg)',         category:'Brass', padii:'¼ kg',
         productWeightG:200, sellPricePerKg:350,
         costLabour1:5, costVettu1:2, costWelding1:7,
         costRunner1:5, costVarai:5, costPolish1:24),
-    Product(name:'BR-V (1 kg)',         category:'Brass', padii:'1 kg',
+    Product(name:'BR-V (1 kg)',          category:'Brass', padii:'1 kg',
         productWeightG:400, sellPricePerKg:350,
         costLabour1:5, costVettu1:5, costWelding1:9,
         costRunner1:5, costVarai:5, costPolish1:31),
-    Product(name:'BR-VI (½ kg)',        category:'Brass', padii:'½ kg',
+    Product(name:'BR-VI (½ kg)',         category:'Brass', padii:'½ kg',
         productWeightG:300, sellPricePerKg:350,
         costLabour1:5, costVettu1:5, costWelding1:8,
         costRunner1:5, costVarai:5, costPolish1:27),
@@ -201,7 +286,7 @@ class FirebaseService {
       _col('products').doc(id).update({'isActive': false});
 
   // ══════════════════════════════════════════════════════════════════════════
-  // SALES — worker rates per kg stored at sale time for accurate salary calc
+  // SALES
   // ══════════════════════════════════════════════════════════════════════════
 
   Future<String> addSale(Sale sale) async {
@@ -215,7 +300,7 @@ class FirebaseService {
     final dateStr = date.toIso8601String().substring(0, 10);
     final q = await _col('sales').where('date', isEqualTo: dateStr).get();
     final list = q.docs.map((d) => Sale.fromMap(d.id, d.data())).toList();
-    list.sort((a, b) => (b.date.millisecondsSinceEpoch)
+    list.sort((a, b) => b.date.millisecondsSinceEpoch
         .compareTo(a.date.millisecondsSinceEpoch));
     return list;
   }
@@ -233,10 +318,8 @@ class FirebaseService {
 
   Future<double> monthlyTotalProfit(int year, int month) async {
     final sales = await salesForMonth(year, month);
- return sales.fold<double>(
-    0.0,
-    (sum, sale) => sum + sale.profit,
-  );  }
+    return sales.fold<double>(0.0, (sum, s) => sum + s.profit);
+  }
 
   Future<List<Sale>> salesForBuyer(String buyerId) async {
     final q = await _col('sales').where('buyerId', isEqualTo: buyerId).get();
@@ -272,6 +355,41 @@ class FirebaseService {
       _col('buyers').doc(id).update({'isActive': false});
 
   // ══════════════════════════════════════════════════════════════════════════
+  // BUYER TRANSACTIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Stream of all transactions for a specific buyer, newest first
+  Stream<List<BuyerTransaction>> buyerTransactionsStream(String buyerId) =>
+      _col('buyerTransactions')
+          .where('buyerId', isEqualTo: buyerId)
+          .orderBy('timestamp', descending: true)
+          .snapshots()
+          .map((s) => s.docs
+              .map((d) => BuyerTransaction.fromMap(d.id, d.data()))
+              .toList());
+
+  Future<List<BuyerTransaction>> getBuyerTransactions(String buyerId) async {
+    final q = await _col('buyerTransactions')
+        .where('buyerId', isEqualTo: buyerId)
+        .orderBy('timestamp', descending: true)
+        .get();
+    return q.docs.map((d) => BuyerTransaction.fromMap(d.id, d.data())).toList();
+  }
+
+  Future<void> addBuyerTransaction(BuyerTransaction tx) async {
+    await _col('buyerTransactions').add(tx.toMap());
+  }
+
+  Future<void> deleteBuyerTransaction(String id) =>
+      _col('buyerTransactions').doc(id).delete();
+
+  /// Running balance for a buyer: positive = buyer still owes us money
+  Future<double> buyerBalance(String buyerId) async {
+    final txs = await getBuyerTransactions(buyerId);
+    return txs.fold<double>(0.0, (sum, tx) => sum + tx.signedAmount);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
   // WORKERS
   // ══════════════════════════════════════════════════════════════════════════
 
@@ -296,6 +414,45 @@ class FirebaseService {
 
   Future<void> deleteWorker(String id) =>
       _col('workers').doc(id).update({'isActive': false});
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // WORKER TRANSACTIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  /// Stream of all transactions for a specific worker, newest first
+  Stream<List<WorkerTransaction>> workerTransactionsStream(String workerId) =>
+      _col('workerTransactions')
+          .where('workerId', isEqualTo: workerId)
+          .orderBy('timestamp', descending: true)
+          .snapshots()
+          .map((s) => s.docs
+              .map((d) => WorkerTransaction.fromMap(d.id, d.data()))
+              .toList());
+
+  Future<List<WorkerTransaction>> getWorkerTransactions(String workerId) async {
+    final q = await _col('workerTransactions')
+        .where('workerId', isEqualTo: workerId)
+        .orderBy('timestamp', descending: true)
+        .get();
+    return q.docs.map((d) => WorkerTransaction.fromMap(d.id, d.data())).toList();
+  }
+
+  Future<void> addWorkerTransaction(WorkerTransaction tx) async {
+    await _col('workerTransactions').add(tx.toMap());
+  }
+
+  Future<void> deleteWorkerTransaction(String id) =>
+      _col('workerTransactions').doc(id).delete();
+
+  /// Total paid out to a worker (salary + advance + bonus - deductions)
+  Future<double> workerTotalPaid(String workerId) async {
+    final txs = await getWorkerTransactions(workerId);
+    // signedAmount: paid types are negative (money goes OUT), deduction positive
+    // We want total paid = sum of paid amounts
+    return txs
+        .where((t) => t.type.isPaid)
+        .fold<double>(0.0, (s, t) => s + t.amount);
+  }
 
   // ── Attendance ─────────────────────────────────────────────────────────────
 
@@ -345,9 +502,6 @@ class FirebaseService {
 
   // ══════════════════════════════════════════════════════════════════════════
   // MONTHLY SUMMARY
-  // Worker salary = sum of (workerRatePerKg × qty) per sale
-  // Only workers whose role matches a product cost field are paid.
-  // e.g. 20 kg SS-I sold → Plasma worker earns: 12.5/piece × (1000/500) × 20 = Rs 500
   // ══════════════════════════════════════════════════════════════════════════
 
   Future<MonthlySummary> monthlySummary(int year, int month) async {
@@ -370,7 +524,6 @@ class FirebaseService {
         .fold(0.0, (s, a) => s + a.wage);
 
     // ── PRODUCT-BASED WORKER SALARY ──────────────────────────────────────
-    // For each sale: worker earned = workerRatePerKg × qty sold
     final Map<String, double> autoWageByRole = {};
     for (final sale in sales) {
       sale.workerRatesPerKg.forEach((role, ratePerKg) {
@@ -378,7 +531,6 @@ class FirebaseService {
       });
     }
 
-    // Match role to named workers
     final List<WorkerAutoWage> autoWages = [];
     final Set<String> matchedRoles = {};
     for (final w in workers) {
@@ -389,7 +541,6 @@ class FirebaseService {
             ratePerKg: 0, autoWage: wage));
       }
     }
-    // Add any roles in sales that have no named worker
     autoWageByRole.forEach((role, wage) {
       if (!matchedRoles.contains(role)) {
         autoWages.add(WorkerAutoWage(
@@ -399,7 +550,6 @@ class FirebaseService {
     });
     final autoWageTotal = autoWageByRole.values.fold(0.0, (s, v) => s + v);
 
-    // Maps for charts/tables
     final Map<String, double>   dailyMap      = {};
     final Map<String, double>   productMap    = {};
     final Map<String, BuyerMonthSummary> buyerMapI = {};
@@ -436,7 +586,7 @@ class FirebaseService {
   }
 }
 
-// ── Data classes ──────────────────────────────────────────────────────────────
+// ── Supporting data classes ───────────────────────────────────────────────────
 class BuyerSummary {
   final int salesCount;
   final double totalKg, totalRevenue, totalProfit;

@@ -44,7 +44,7 @@ class _LoginScreenState extends State<LoginScreen>
     if (!_loginForm.currentState!.validate()) return;
     setState(() { _loading = true; _error = null; });
     try {
-      await FirebaseService.instance.login(_lemail.text.trim(), _lpass.text);
+      await FirebaseService.instance.login(_lemail.text.trim(), _lpass.text, );
     } catch (e) {
       setState(() => _error = _friendlyError(e.toString()));
     }
@@ -59,12 +59,17 @@ class _LoginScreenState extends State<LoginScreen>
     }
     setState(() { _loading = true; _error = null; });
 try {
-  await FirebaseService.instance.login(
-    _lemail.text.trim(),
-    _lpass.text,
+  await FirebaseService.instance.register(
+    _remail.text.trim(),
+    _rpass.text,
+    _rname.text.trim(),
   );
 
   if (!mounted) return;
+
+    setState(() {
+      _tabs.index = 0; // switch to login tab
+    });
 } catch (e) {
   if (!mounted) return;
 

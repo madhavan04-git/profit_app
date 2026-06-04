@@ -1,9 +1,8 @@
 // lib/models/models.dart
 // My Pattarii — Full cost model
 // Labour 1-4, Runner 1-2, Polish 1-2, Vettu 1-2, Welding 1-2, Spinner 1-2
-// Plasma (single), Varai (single), Material (single)
+// Plasma 1, Plasma 2 (TWO plasma workers), Varai (single), Material (single)
 // Profit = (sellPrice - costPerKg) × qty  [or per piece for pcs products]
-// Material is SUBTRACTED from sell price (it is a cost, not profit)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PRODUCT
@@ -20,30 +19,30 @@ class Product {
   final bool isActive;
 
   // ── Cost fields (per productWeightG grams) ──────────────────────────────
-  // Material — raw material cost (subtracted from profit)
   final double costMaterial;
-  // Plasma — single worker
-  final double costPlasma;
-  // Labour 1, 2, 3, 4
+  // Plasma 1 & Plasma 2 (two separate plasma workers)
+  final double costPlasma1;
+  final double costPlasma2;
+  // Labour 1-4
   final double costLabour1;
   final double costLabour2;
   final double costLabour3;
   final double costLabour4;
-  // Vettu 1, 2
+  // Vettu 1-2
   final double costVettu1;
   final double costVettu2;
-  // Welding 1, 2
+  // Welding 1-2
   final double costWelding1;
   final double costWelding2;
-  // Runner 1, 2
+  // Runner 1-2
   final double costRunner1;
   final double costRunner2;
   // Varai (filing) — single
   final double costVarai;
-  // Polish 1, 2
+  // Polish 1-2
   final double costPolish1;
   final double costPolish2;
-  // Spinner 1, 2
+  // Spinner 1-2
   final double costSpinner1;
   final double costSpinner2;
 
@@ -58,7 +57,8 @@ class Product {
     this.unit = 'kg',
     this.isActive = true,
     this.costMaterial  = 0,
-    this.costPlasma    = 0,
+    this.costPlasma1   = 0,
+    this.costPlasma2   = 0,
     this.costLabour1   = 0,
     this.costLabour2   = 0,
     this.costLabour3   = 0,
@@ -77,9 +77,8 @@ class Product {
   });
 
   // ── Derived values ────────────────────────────────────────────────────────
-  // Total cost per piece (productWeightG grams)
   double get totalCostPerProduct =>
-      costMaterial  + costPlasma   +
+      costMaterial  + costPlasma1  + costPlasma2  +
       costLabour1   + costLabour2  + costLabour3  + costLabour4  +
       costVettu1    + costVettu2   +
       costWelding1  + costWelding2 +
@@ -88,24 +87,16 @@ class Product {
       costPolish1   + costPolish2  +
       costSpinner1  + costSpinner2;
 
-  // Cost per kg = (totalCostPerProduct / productWeightG) * 1000
-  double get costPerKg => totalCostPerProduct * (1000.0 / productWeightG);
-
-  // Profit per kg = sellPricePerKg - costPerKg
-  // (material, plasma, welding etc. are ALL costs so they ALL reduce profit)
-  double get profitPerKg => sellPricePerKg - costPerKg;
-
-  // Profit per piece = profitPerKg × (productWeightG / 1000)
+  double get costPerKg      => totalCostPerProduct * (1000.0 / productWeightG);
+  double get profitPerKg    => sellPricePerKg - costPerKg;
   double get profitPerPiece => profitPerKg * (productWeightG / 1000.0);
-
   double get profitPerUnit  => soldByPiece ? profitPerPiece : profitPerKg;
   double profitForQty(double qty) => qty * profitPerUnit;
 
   // ── Worker cost map: role → cost per productWeightG grams ────────────────
-  // Used for monthly salary calculation per product sold.
-  // Only roles with cost > 0 are included.
   Map<String, double> get workerCostsPerProduct => {
-    if (costPlasma   > 0) 'Plasma':    costPlasma,
+    if (costPlasma1  > 0) 'Plasma 1':  costPlasma1,
+    if (costPlasma2  > 0) 'Plasma 2':  costPlasma2,
     if (costLabour1  > 0) 'Labour 1':  costLabour1,
     if (costLabour2  > 0) 'Labour 2':  costLabour2,
     if (costLabour3  > 0) 'Labour 3':  costLabour3,
@@ -123,7 +114,6 @@ class Product {
     if (costSpinner2 > 0) 'Spinner 2': costSpinner2,
   };
 
-  // ── Worker rates per KG (for storing at sale time) ───────────────────────
   Map<String, double> get workerRatesPerKg {
     final Map<String, double> result = {};
     workerCostsPerProduct.forEach((role, costPerPiece) {
@@ -137,7 +127,8 @@ class Product {
     'productWeightG': productWeightG, 'sellPricePerKg': sellPricePerKg,
     'soldByPiece': soldByPiece, 'unit': unit, 'isActive': isActive,
     'costMaterial':  costMaterial,
-    'costPlasma':    costPlasma,
+    'costPlasma1':   costPlasma1,
+    'costPlasma2':   costPlasma2,
     'costLabour1':   costLabour1,
     'costLabour2':   costLabour2,
     'costLabour3':   costLabour3,
@@ -166,7 +157,9 @@ class Product {
     unit:           m['unit']          ?? 'kg',
     isActive:       m['isActive']      ?? true,
     costMaterial:  _d(m['costMaterial']),
-    costPlasma:    _d(m['costPlasma']),
+    // Support old 'costPlasma' field (single) → maps to Plasma 1
+    costPlasma1:   _d(m['costPlasma1'] ?? m['costPlasma']),
+    costPlasma2:   _d(m['costPlasma2']),
     costLabour1:   _d(m['costLabour1']),
     costLabour2:   _d(m['costLabour2']),
     costLabour3:   _d(m['costLabour3']),
@@ -190,7 +183,8 @@ class Product {
     String? id, String? name, String? category, String? padii,
     int? productWeightG, double? sellPricePerKg, bool? soldByPiece,
     String? unit, bool? isActive,
-    double? costMaterial,  double? costPlasma,
+    double? costMaterial,
+    double? costPlasma1,   double? costPlasma2,
     double? costLabour1,   double? costLabour2,  double? costLabour3,  double? costLabour4,
     double? costVettu1,    double? costVettu2,
     double? costWelding1,  double? costWelding2,
@@ -206,7 +200,8 @@ class Product {
     soldByPiece: soldByPiece ?? this.soldByPiece, unit: unit ?? this.unit,
     isActive: isActive ?? this.isActive,
     costMaterial:  costMaterial  ?? this.costMaterial,
-    costPlasma:    costPlasma    ?? this.costPlasma,
+    costPlasma1:   costPlasma1   ?? this.costPlasma1,
+    costPlasma2:   costPlasma2   ?? this.costPlasma2,
     costLabour1:   costLabour1   ?? this.costLabour1,
     costLabour2:   costLabour2   ?? this.costLabour2,
     costLabour3:   costLabour3   ?? this.costLabour3,
@@ -239,7 +234,6 @@ class Sale {
   final double salePrice;
   final double profit;
   final DateTime date;
-  // Worker cost map per kg stored at sale time for accurate monthly salary
   final Map<String, double> workerRatesPerKg;
 
   const Sale({
@@ -315,12 +309,91 @@ class Buyer {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// BUYER TRANSACTION
+// advance / payment / latePayment / refund
+// ══════════════════════════════════════════════════════════════════════════════
+enum BuyerTxType { advance, payment, latePayment, refund }
+
+extension BuyerTxTypeExt on BuyerTxType {
+  String get label {
+    switch (this) {
+      case BuyerTxType.advance:     return 'Advance';
+      case BuyerTxType.payment:     return 'Payment';
+      case BuyerTxType.latePayment: return 'Late Payment';
+      case BuyerTxType.refund:      return 'Refund';
+    }
+  }
+
+  String get emoji {
+    switch (this) {
+      case BuyerTxType.advance:     return '⬆';
+      case BuyerTxType.payment:     return '✓';
+      case BuyerTxType.latePayment: return '⏰';
+      case BuyerTxType.refund:      return '↩';
+    }
+  }
+
+  // positive = money received FROM buyer
+  bool get isCredit => this != BuyerTxType.refund;
+
+  static BuyerTxType fromString(String s) {
+    switch (s) {
+      case 'advance':     return BuyerTxType.advance;
+      case 'latePayment': return BuyerTxType.latePayment;
+      case 'refund':      return BuyerTxType.refund;
+      default:            return BuyerTxType.payment;
+    }
+  }
+}
+
+class BuyerTransaction {
+  final String? id;
+  final String buyerId;
+  final String buyerName;
+  final BuyerTxType type;
+  final double amount;
+  final String note;
+  final DateTime dateTime;
+
+  const BuyerTransaction({
+    this.id,
+    required this.buyerId,
+    required this.buyerName,
+    required this.type,
+    required this.amount,
+    this.note = '',
+    required this.dateTime,
+  });
+
+  double get signedAmount => type.isCredit ? amount : -amount;
+
+  Map<String, dynamic> toMap() => {
+    'buyerId':   buyerId,
+    'buyerName': buyerName,
+    'type':      type.name,
+    'amount':    amount,
+    'note':      note,
+    'dateStr':   dateTime.toIso8601String().substring(0, 10),
+    'dateTime':  dateTime.toIso8601String(),
+    'timestamp': dateTime.millisecondsSinceEpoch,
+  };
+
+  factory BuyerTransaction.fromMap(String id, Map<String, dynamic> m) =>
+      BuyerTransaction(
+        id:        id,
+        buyerId:   m['buyerId']   ?? '',
+        buyerName: m['buyerName'] ?? '',
+        type:      BuyerTxTypeExt.fromString(m['type'] ?? 'payment'),
+        amount:    (m['amount'] as num?)?.toDouble() ?? 0,
+        note:      m['note'] ?? '',
+        dateTime:  m['dateTime'] != null
+            ? DateTime.parse(m['dateTime'])
+            : DateTime.now(),
+      );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // WORKER
-// Role must match a key in workerCostsPerProduct / workerRatesPerKg
-// Valid roles: 'Labour 1','Labour 2','Labour 3','Labour 4',
-//              'Runner 1','Runner 2','Polish 1','Polish 2',
-//              'Vettu 1','Vettu 2','Welding 1','Welding 2',
-//              'Spinner 1','Spinner 2','Plasma','Varai'
 // ══════════════════════════════════════════════════════════════════════════════
 class Worker {
   final String? id;
@@ -347,6 +420,94 @@ class Worker {
       Worker(id: id ?? this.id, name: name ?? this.name,
           role: role ?? this.role, dailyWage: dailyWage ?? this.dailyWage,
           isActive: isActive ?? this.isActive);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WORKER TRANSACTION
+// salaryPaid / advance / bonus / deduction
+// ══════════════════════════════════════════════════════════════════════════════
+enum WorkerTxType { salaryPaid, advance, bonus, deduction }
+
+extension WorkerTxTypeExt on WorkerTxType {
+  String get label {
+    switch (this) {
+      case WorkerTxType.salaryPaid: return 'Salary Paid';
+      case WorkerTxType.advance:    return 'Advance';
+      case WorkerTxType.bonus:      return 'Bonus';
+      case WorkerTxType.deduction:  return 'Deduction';
+    }
+  }
+
+  String get emoji {
+    switch (this) {
+      case WorkerTxType.salaryPaid: return '💰';
+      case WorkerTxType.advance:    return '⬆';
+      case WorkerTxType.bonus:      return '🎁';
+      case WorkerTxType.deduction:  return '⬇';
+    }
+  }
+
+  // positive = paid out to worker, negative = deducted
+  bool get isPaid => this != WorkerTxType.deduction;
+
+  static WorkerTxType fromString(String s) {
+    switch (s) {
+      case 'advance':   return WorkerTxType.advance;
+      case 'bonus':     return WorkerTxType.bonus;
+      case 'deduction': return WorkerTxType.deduction;
+      default:          return WorkerTxType.salaryPaid;
+    }
+  }
+}
+
+class WorkerTransaction {
+  final String? id;
+  final String workerId;
+  final String workerName;
+  final String workerRole;
+  final WorkerTxType type;
+  final double amount;
+  final String note;
+  final DateTime dateTime;
+
+  const WorkerTransaction({
+    this.id,
+    required this.workerId,
+    required this.workerName,
+    required this.workerRole,
+    required this.type,
+    required this.amount,
+    this.note = '',
+    required this.dateTime,
+  });
+
+  double get signedAmount => type.isPaid ? -amount : amount; // paid = money out
+
+  Map<String, dynamic> toMap() => {
+    'workerId':   workerId,
+    'workerName': workerName,
+    'workerRole': workerRole,
+    'type':       type.name,
+    'amount':     amount,
+    'note':       note,
+    'dateStr':    dateTime.toIso8601String().substring(0, 10),
+    'dateTime':   dateTime.toIso8601String(),
+    'timestamp':  dateTime.millisecondsSinceEpoch,
+  };
+
+  factory WorkerTransaction.fromMap(String id, Map<String, dynamic> m) =>
+      WorkerTransaction(
+        id:         id,
+        workerId:   m['workerId']   ?? '',
+        workerName: m['workerName'] ?? '',
+        workerRole: m['workerRole'] ?? '',
+        type:       WorkerTxTypeExt.fromString(m['type'] ?? 'salaryPaid'),
+        amount:     (m['amount'] as num?)?.toDouble() ?? 0,
+        note:       m['note'] ?? '',
+        dateTime:   m['dateTime'] != null
+            ? DateTime.parse(m['dateTime'])
+            : DateTime.now(),
+      );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -407,4 +568,118 @@ class Expense {
     amount: (m['amount'] as num?)?.toDouble() ?? 0,
     date: m['date'] != null ? DateTime.parse(m['date']) : DateTime.now(),
   );
+}
+
+
+
+// Add to models.dart
+
+// Simple Transaction Types (Credit/Debit only)
+enum SimpleTxType { credit, debit }
+
+extension SimpleTxTypeExt on SimpleTxType {
+  String get label => this == SimpleTxType.credit ? 'Credit (Sale)' : 'Debit (Payment)';
+  String get emoji => this == SimpleTxType.credit ? '💰' : '💳';
+}
+
+class SimpleTransaction {
+  final String? id;
+  final String buyerId;
+  final String buyerName;
+  final SimpleTxType type;
+  final double amount;
+  final String note;
+  final DateTime dateTime;
+
+  const SimpleTransaction({
+    this.id,
+    required this.buyerId,
+    required this.buyerName,
+    required this.type,
+    required this.amount,
+    this.note = '',
+    required this.dateTime,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'buyerId': buyerId,
+    'buyerName': buyerName,
+    'type': type.name,
+    'amount': amount,
+    'note': note,
+    'dateTime': dateTime.toIso8601String(),
+    'timestamp': dateTime.millisecondsSinceEpoch,
+  };
+
+  factory SimpleTransaction.fromMap(String id, Map<String, dynamic> m) {
+    final typeStr = m['type'] ?? 'credit';
+    return SimpleTransaction(
+      id: id,
+      buyerId: m['buyerId'] ?? '',
+      buyerName: m['buyerName'] ?? '',
+      type: typeStr == 'credit' ? SimpleTxType.credit : SimpleTxType.debit,
+      amount: (m['amount'] as num?)?.toDouble() ?? 0,
+      note: m['note'] ?? '',
+      dateTime: m['dateTime'] != null 
+          ? DateTime.parse(m['dateTime']) 
+          : DateTime.now(),
+    );
+  }
+}
+
+// Worker Simple Transaction Types
+enum WorkerSimpleTxType { credit, debit }
+
+extension WorkerSimpleTxTypeExt on WorkerSimpleTxType {
+  String get label => this == WorkerSimpleTxType.credit ? 'Earned (Sales)' : 'Payment Made';
+  String get emoji => this == WorkerSimpleTxType.credit ? '💰' : '💳';
+}
+
+class WorkerSimpleTransaction {
+  final String? id;
+  final String workerId;
+  final String workerName;
+  final String workerRole;
+  final WorkerSimpleTxType type;
+  final double amount;
+  final String note;
+  final DateTime dateTime;
+
+  const WorkerSimpleTransaction({
+    this.id,
+    required this.workerId,
+    required this.workerName,
+    required this.workerRole,
+    required this.type,
+    required this.amount,
+    this.note = '',
+    required this.dateTime,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'workerId': workerId,
+    'workerName': workerName,
+    'workerRole': workerRole,
+    'type': type.name,
+    'amount': amount,
+    'note': note,
+    'dateTime': dateTime.toIso8601String(),
+    'timestamp': dateTime.millisecondsSinceEpoch,
+  };
+
+  factory WorkerSimpleTransaction.fromMap(String id, Map<String, dynamic> m) {
+    final typeStr = m['type'] ?? 'credit';
+    return WorkerSimpleTransaction(
+      id: id,
+      workerId: m['workerId'] ?? '',
+      workerName: m['workerName'] ?? '',
+      workerRole: m['workerRole'] ?? '',
+      type: typeStr == 'credit' ? WorkerSimpleTxType.credit : WorkerSimpleTxType.debit,
+      amount: (m['amount'] as num?)?.toDouble() ?? 0,
+      note: m['note'] ?? '',
+      dateTime: m['dateTime'] != null 
+          ? DateTime.parse(m['dateTime']) 
+          : DateTime.now(),
+    );
+  }
 }

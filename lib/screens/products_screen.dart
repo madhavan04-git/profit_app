@@ -278,7 +278,7 @@ class _ProductFormState extends State<ProductFormScreen> {
 
   // Cost controllers — multi-worker
   late final TextEditingController
-      _material, _plasma,
+      _material, _plasma1, _plasma2,
       _labour1, _labour2, _labour3, _labour4,
       _vettu1,  _vettu2,
       _welding1, _welding2,
@@ -299,7 +299,8 @@ class _ProductFormState extends State<ProductFormScreen> {
     _soldByPiece = p?.soldByPiece ?? false;
 
     _material = _c(p?.costMaterial);
-    _plasma   = _c(p?.costPlasma);
+    _plasma1   = _c(p?.costPlasma1);
+    _plasma2   = _c(p?.costPlasma2);
     _labour1  = _c(p?.costLabour1);
     _labour2  = _c(p?.costLabour2);
     _labour3  = _c(p?.costLabour3);
@@ -323,7 +324,7 @@ class _ProductFormState extends State<ProductFormScreen> {
   @override
   void dispose() {
     for (final c in [_name, _category, _padii, _weightG, _sellPrice,
-        _material, _plasma, _labour1, _labour2, _labour3, _labour4,
+        _material,  _plasma1, _plasma2, _labour1, _labour2, _labour3, _labour4,
         _vettu1, _vettu2, _welding1, _welding2, _runner1, _runner2,
         _varai, _polish1, _polish2, _spinner1, _spinner2]) c.dispose();
     super.dispose();
@@ -333,7 +334,7 @@ class _ProductFormState extends State<ProductFormScreen> {
 
   // Total cost per piece
   double get _totalCost =>
-      _v(_material)  + _v(_plasma)   +
+      _v(_material)  + _v(_plasma1) + _v(_plasma2) +
       _v(_labour1)   + _v(_labour2)  + _v(_labour3)  + _v(_labour4)  +
       _v(_vettu1)    + _v(_vettu2)   +
       _v(_welding1)  + _v(_welding2) +
@@ -366,7 +367,9 @@ class _ProductFormState extends State<ProductFormScreen> {
       soldByPiece:    _soldByPiece,
       unit:           _soldByPiece ? 'pcs' : 'kg',
       costMaterial:   _v(_material),
-      costPlasma:     _v(_plasma),
+      costPlasma1:     _v(_plasma1),
+      costPlasma2:     _v(_plasma2),
+
       costLabour1:    _v(_labour1),
       costLabour2:    _v(_labour2),
       costLabour3:    _v(_labour3),
@@ -443,7 +446,10 @@ class _ProductFormState extends State<ProductFormScreen> {
             Row(children: [
               Expanded(child: _tf(_material, 'Material', type: TextInputType.number)),
               const SizedBox(width: 12),
-              Expanded(child: _tf(_plasma,   'Plasma',   type: TextInputType.number)),
+              Expanded(child: _tf(_plasma1,   'Plasma 1',   type: TextInputType.number)),
+            ]),
+            Row(children: [
+              Expanded(child: _tf(_plasma2,   'Plasma 2',   type: TextInputType.number)),
             ]),
 
             // Labour 1, 2
