@@ -1,4 +1,4 @@
-// lib/screens/home_screen.dart - Updated with only logo tap for sidebar
+// lib/screens/home_screen.dart - Complete with Worker Override Feature
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -121,18 +121,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ));
     if (ok == true) await _svc.logout();
-  }
-
-  // ── Open buyer transactions ──────────────────────────────────────────────────
-  void _openBuyerTx(Buyer buyer) {
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => const BuyerTransactionsScreen()));
-  }
-
-  // ── Open worker transactions ─────────────────────────────────────────────────
-  void _openWorkerTx(Worker worker) {
-    Navigator.push(context,
-        MaterialPageRoute(builder: (_) => const WorkerTransactionsScreen()));
   }
 
   // ── Build ────────────────────────────────────────────────────────────────────
@@ -299,7 +287,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // ══════════════════════════════════════════════════════════════════════════════
-  // HOME BODY - Removed the right side menu icon
+  // HOME BODY
   // ══════════════════════════════════════════════════════════════════════════════
   Widget _buildHome() {
     final fmt = NumberFormat('#,##0', 'en_IN');
@@ -313,7 +301,7 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: EdgeInsets.fromLTRB(16, top + 10, 16, 14),
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
-            // ★ Logo — tap to open sidebar (ONLY way to open sidebar now) ★
+            // ★ Logo — tap to open sidebar ★
             GestureDetector(
               onTap: () => _scaffoldKey.currentState?.openDrawer(),
               child: Container(
@@ -346,7 +334,6 @@ class _HomeScreenState extends State<HomeScreen> {
                   style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
             ]),
             const Spacer(),
-            // ❌ REMOVED the menu icon - no longer needed
           ]),
           const SizedBox(height: 12),
 
@@ -386,10 +373,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 child: ListView(
                   padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
                   children: [
-
-                    // ══════════════════════════════════════════════════
-                    // TODAY'S SALES SECTION
-                    // ══════════════════════════════════════════════════
                     _sectionHeader(
                       icon: Icons.receipt_long_outlined,
                       title: "Today's Sales",
@@ -413,17 +396,6 @@ class _HomeScreenState extends State<HomeScreen> {
     ]);
   }
 
-  // ── Quick buyer transaction bottom sheet ────────────────────────────────────
-  void _showQuickBuyerTx(Buyer buyer) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (_) => _QuickBuyerTxSheet(buyer: buyer),
-    );
-  }
-
-  // ── Helpers ─────────────────────────────────────────────────────────────────
   Widget _sectionHeader({
     required IconData icon,
     required String title,
@@ -484,7 +456,6 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 }
 
-
 // ══════════════════════════════════════════════════════════════════════════════
 // SALE CARD
 // ══════════════════════════════════════════════════════════════════════════════
@@ -540,191 +511,7 @@ class _SaleCard extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// QUICK BUYER TRANSACTION SHEET
-// ══════════════════════════════════════════════════════════════════════════════
-class _QuickBuyerTxSheet extends StatefulWidget {
-  final Buyer buyer;
-  const _QuickBuyerTxSheet({required this.buyer});
-  @override State<_QuickBuyerTxSheet> createState() => _QuickBuyerTxSheetState();
-}
-
-class _QuickBuyerTxSheetState extends State<_QuickBuyerTxSheet> {
-  BuyerTxType _type   = BuyerTxType.payment;
-  final _amountCtrl   = TextEditingController();
-  final _noteCtrl     = TextEditingController();
-  DateTime _date      = DateTime.now();
-  TimeOfDay _time     = TimeOfDay.now();
-  bool _saving        = false;
-
-  @override
-  void dispose() { _amountCtrl.dispose(); _noteCtrl.dispose(); super.dispose(); }
-
-  Future<void> _pickDate() async {
-    final d = await showDatePicker(context: context, initialDate: _date,
-        firstDate: DateTime(2020),
-        lastDate: DateTime.now().add(const Duration(days: 1)));
-    if (d != null) setState(() => _date = d);
-  }
-
-  Future<void> _pickTime() async {
-    final t = await showTimePicker(context: context, initialTime: _time);
-    if (t != null) setState(() => _time = t);
-  }
-
-  Future<void> _save() async {
-    final amount = double.tryParse(_amountCtrl.text.trim());
-    if (amount == null || amount <= 0) return;
-    setState(() => _saving = true);
-    final dt = DateTime(_date.year, _date.month, _date.day, _time.hour, _time.minute);
-    await FirebaseService.instance.addBuyerTransaction(BuyerTransaction(
-      buyerId: widget.buyer.id!, buyerName: widget.buyer.name,
-      type: _type, amount: amount,
-      note: _noteCtrl.text.trim(), dateTime: dt,
-    ));
-    if (mounted) Navigator.pop(context);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final bottom = MediaQuery.of(context).viewInsets.bottom;
-
-    Color typeColor(BuyerTxType t) {
-      switch (t) {
-        case BuyerTxType.advance:     return const Color(0xFF7B4F06);
-        case BuyerTxType.latePayment: return const Color(0xFF884400);
-        case BuyerTxType.refund:      return const Color(0xFFCC4444);
-        default:                      return const Color(0xFF1A6B2A);
-      }
-    }
-
-    return Container(
-      decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      padding: EdgeInsets.fromLTRB(20, 16, 20, 20 + bottom),
-      child: SingleChildScrollView(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 40, height: 4,
-              margin: const EdgeInsets.only(bottom: 16),
-              decoration: BoxDecoration(color: Colors.grey.shade300,
-                  borderRadius: BorderRadius.circular(2))),
-
-          Row(children: [
-            const Icon(Icons.account_balance_wallet_outlined,
-                color: Color(0xFF1F4E79)),
-            const SizedBox(width: 8),
-            Expanded(child: Text('Add Transaction — ${widget.buyer.name}',
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
-          ]),
-          const SizedBox(height: 20),
-
-          Align(alignment: Alignment.centerLeft,
-              child: Text('Payment Type',
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
-                      color: Colors.grey.shade600))),
-          const SizedBox(height: 8),
-          Row(children: BuyerTxType.values.map((t) {
-            final sel = t == _type;
-            final c   = typeColor(t);
-            return Expanded(child: GestureDetector(
-              onTap: () => setState(() => _type = t),
-              child: Container(
-                margin: const EdgeInsets.only(right: 6),
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                    color: sel ? c : c.withOpacity(0.08),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: sel ? c : c.withOpacity(0.2))),
-                child: Column(mainAxisSize: MainAxisSize.min, children: [
-                  Text(t.emoji, style: const TextStyle(fontSize: 18)),
-                  const SizedBox(height: 3),
-                  Text(t.label, textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700,
-                          color: sel ? Colors.white : c)),
-                ]),
-              ),
-            ));
-          }).toList()),
-          const SizedBox(height: 16),
-
-          TextField(
-            controller: _amountCtrl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            decoration: InputDecoration(
-              labelText: 'Amount (Rs) *',
-              prefixText: 'Rs ',
-              filled: true, fillColor: const Color(0xFFF5F6FA),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none),
-            ),
-          ),
-          const SizedBox(height: 10),
-
-          Row(children: [
-            Expanded(child: GestureDetector(
-              onTap: _pickDate,
-              child: _dateTimeBox(
-                  Icons.calendar_today_outlined,
-                  DateFormat('dd MMM yyyy').format(_date)),
-            )),
-            const SizedBox(width: 10),
-            Expanded(child: GestureDetector(
-              onTap: _pickTime,
-              child: _dateTimeBox(
-                  Icons.access_time_outlined,
-                  _time.format(context)),
-            )),
-          ]),
-          const SizedBox(height: 10),
-
-          TextField(
-            controller: _noteCtrl,
-            maxLines: 2,
-            decoration: InputDecoration(
-              labelText: 'Note (optional)',
-              hintText: 'e.g. advance for SS order',
-              filled: true, fillColor: const Color(0xFFF5F6FA),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none),
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          SizedBox(
-            width: double.infinity, height: 52,
-            child: ElevatedButton(
-              onPressed: _saving ? null : _save,
-              style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF1F4E79),
-                  foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14))),
-              child: _saving
-                  ? const SizedBox(width: 22, height: 22,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text('Save Transaction',
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-            ),
-          ),
-        ]),
-      ),
-    );
-  }
-
-  Widget _dateTimeBox(IconData icon, String text) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-    decoration: BoxDecoration(
-        color: const Color(0xFFF5F6FA), borderRadius: BorderRadius.circular(12)),
-    child: Row(children: [
-      Icon(icon, size: 16, color: const Color(0xFF1F4E79)),
-      const SizedBox(width: 8),
-      Text(text, style: const TextStyle(fontSize: 13)),
-    ]),
-  );
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// ADD SALE SHEET
+// ADD SALE SHEET - WITH WORKER OVERRIDE
 // ══════════════════════════════════════════════════════════════════════════════
 class AddSaleSheet extends StatefulWidget {
   final DateTime date;
@@ -744,12 +531,30 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
   bool _customPrice = false;
   double _profit = 0, _effectivePrice = 0;
   bool _saving = false;
+  
+  // Worker override fields
+  bool _overrideWorkers = false;
+  Map<String, String> _workerOverrides = {}; // originalRole -> newRole
+  List<Worker> _workers = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadWorkers();
+  }
+
+  Future<void> _loadWorkers() async {
+    _workers = await FirebaseService.instance.getWorkers();
+    setState(() {});
+  }
 
   void _selectProduct(Product? p) {
     setState(() {
       _product = p;
       _effectivePrice = p?.sellPricePerKg ?? 0;
       _priceCtrl.text = _effectivePrice.toStringAsFixed(0);
+      _workerOverrides.clear();
+      _overrideWorkers = false;
     });
     _recalc();
   }
@@ -773,12 +578,44 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     setState(() => _profit = profit);
   }
 
+  // Get final worker rates with overrides applied
+  Map<String, double> _getFinalWorkerRates() {
+    if (_product == null) return {};
+    
+    final baseRates = Map<String, double>.from(_product!.workerRatesPerKg);
+    
+    if (!_overrideWorkers || _workerOverrides.isEmpty) {
+      return baseRates;
+    }
+    
+    // Apply overrides: transfer earnings from original role to new worker
+    final Map<String, double> finalRates = {};
+    
+    for (final entry in baseRates.entries) {
+      final originalRole = entry.key;
+      final rate = entry.value;
+      
+      if (_workerOverrides.containsKey(originalRole)) {
+        final newRole = _workerOverrides[originalRole]!;
+        finalRates[newRole] = (finalRates[newRole] ?? 0) + rate;
+      } else {
+        finalRates[originalRole] = (finalRates[originalRole] ?? 0) + rate;
+      }
+    }
+    
+    return finalRates;
+  }
+
   Future<void> _save() async {
     if (_product == null || _qty.text.isEmpty) return;
     setState(() => _saving = true);
     final qty = double.tryParse(_qty.text) ?? 0;
 
     final saleAmount = qty * _effectivePrice;
+    
+    // Get worker rates with overrides applied
+    final finalWorkerRates = _getFinalWorkerRates();
+    
     final sale = Sale(
       productId:        _product!.id!,
       productName:      _product!.name,
@@ -789,7 +626,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       salePrice:        _effectivePrice,
       profit:           _profit,
       date:             widget.date,
-      workerRatesPerKg: _product!.workerRatesPerKg,
+      workerRatesPerKg: finalWorkerRates,
     );
     await FirebaseService.instance.addSale(sale);
     
@@ -818,133 +655,267 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
           color: Colors.white,
           borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
       padding: EdgeInsets.fromLTRB(20, 6, 20, 20 + bottom),
-      child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        Container(width: 40, height: 4, margin: const EdgeInsets.only(bottom: 16),
-            decoration: BoxDecoration(color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(2))),
-        Row(children: [
-          const Text('Add Sale', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const Spacer(),
-          Text(DateFormat('dd MMM yyyy').format(widget.date),
-              style: const TextStyle(fontSize: 13, color: Color(0xFF888888))),
-        ]),
-        const SizedBox(height: 16),
-
-        _DropField<Product>(
-          value: _product, hint: 'Select product *',
-          items: widget.products,
-          label:   (p) => '${p.category} — ${p.name}',
-          caption: (p) => 'Rs ${fmt.format(p.profitPerUnit)}/${p.unit}',
-          onChanged: _selectProduct,
-        ),
-        const SizedBox(height: 10),
-
-        if (_product != null)
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-            margin: const EdgeInsets.only(bottom: 10),
-            decoration: BoxDecoration(color: const Color(0xFFF0F7FF),
-                borderRadius: BorderRadius.circular(8)),
-            child: Row(children: [
-              const Icon(Icons.info_outline, size: 14, color: Color(0xFF1F4E79)),
-              const SizedBox(width: 6),
-              Expanded(child: Text(
-                'Sell: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg  '
-                '•  Cost: Rs ${fmt.format(_product!.costPerKg)}/kg  '
-                '•  Profit: Rs ${fmt.format(_product!.profitPerUnit)}/${_product!.unit}',
-                style: const TextStyle(fontSize: 11, color: Color(0xFF1F4E79)))),
-            ]),
-          ),
-
-        _DropField<Buyer?>(
-          value: _buyer, hint: 'Select buyer (optional)',
-          items: [null, ...widget.buyers],
-          label:   (b) => b == null ? 'No buyer' : b.name,
-          caption: (b) => b == null ? '' : b.phone,
-          onChanged: (b) => setState(() => _buyer = b),
-        ),
-        const SizedBox(height: 10),
-
-        if (_product != null)
+      child: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Container(width: 40, height: 4, margin: const EdgeInsets.only(bottom: 16),
+              decoration: BoxDecoration(color: Colors.grey.shade300,
+                  borderRadius: BorderRadius.circular(2))),
           Row(children: [
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('Change sale price?',
-                  style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-              Text('Default: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg',
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
-            ])),
-            Switch(value: _customPrice,
-                onChanged: (v) { setState(() => _customPrice = v); _recalc(); },
-                activeColor: const Color(0xFF1F4E79)),
+            const Text('Add Sale', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Spacer(),
+            Text(DateFormat('dd MMM yyyy').format(widget.date),
+                style: const TextStyle(fontSize: 13, color: Color(0xFF888888))),
           ]),
+          const SizedBox(height: 16),
 
-        if (_customPrice && _product != null)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 10, top: 4),
-            child: TextField(
-              controller: _priceCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(
-                labelText: 'Sale price per kg (Rs)',
-                prefixText: 'Rs ', suffixText: '/kg',
-                filled: true, fillColor: const Color(0xFFFFF8E1),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
-                    borderSide: BorderSide.none),
+          _DropField<Product>(
+            value: _product, hint: 'Select product *',
+            items: widget.products,
+            label:   (p) => '${p.category} — ${p.name}',
+            caption: (p) => 'Rs ${fmt.format(p.profitPerUnit)}/${p.unit}',
+            onChanged: _selectProduct,
+          ),
+          const SizedBox(height: 10),
+
+          if (_product != null)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              margin: const EdgeInsets.only(bottom: 10),
+              decoration: BoxDecoration(color: const Color(0xFFF0F7FF),
+                  borderRadius: BorderRadius.circular(8)),
+              child: Row(children: [
+                const Icon(Icons.info_outline, size: 14, color: Color(0xFF1F4E79)),
+                const SizedBox(width: 6),
+                Expanded(child: Text(
+                  'Sell: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg  '
+                  '•  Cost: Rs ${fmt.format(_product!.costPerKg)}/kg  '
+                  '•  Profit: Rs ${fmt.format(_product!.profitPerUnit)}/${_product!.unit}',
+                  style: const TextStyle(fontSize: 11, color: Color(0xFF1F4E79)))),
+              ]),
+            ),
+
+          _DropField<Buyer?>(
+            value: _buyer, hint: 'Select buyer (optional)',
+            items: [null, ...widget.buyers],
+            label:   (b) => b == null ? 'No buyer' : b.name,
+            caption: (b) => b == null ? '' : b.phone,
+            onChanged: (b) => setState(() => _buyer = b),
+          ),
+          const SizedBox(height: 10),
+
+          // ── Worker Override Section ─────────────────────────────────────────
+          if (_product != null && _workers.isNotEmpty && _product!.workerCostsPerProduct.isNotEmpty)
+            Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF8E1),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFFE0B2)),
               ),
-              onChanged: (_) => _recalc(),
+              child: Column(children: [
+                SwitchListTile(
+                  value: _overrideWorkers,
+                  onChanged: (v) => setState(() => _overrideWorkers = v),
+                  title: const Text('Override Worker Assignment',
+                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                  subtitle: const Text('Assign this sale to different workers',
+                      style: TextStyle(fontSize: 11)),
+                  activeColor: const Color(0xFF1F4E79),
+                ),
+                
+                if (_overrideWorkers && _product != null)
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: _product!.workerCostsPerProduct.entries.map((entry) {
+                        final originalRole = entry.key;
+                        final cost = entry.value;
+                        final ratePerKg = _product!.workerRatesPerKg[originalRole] ?? 0;
+                        final currentOverride = _workerOverrides[originalRole];
+                        final qty = double.tryParse(_qty.text) ?? 0;
+                        final earnings = ratePerKg * qty;
+                        
+                        // Get available workers
+                        final availableWorkers = [
+                          {'role': originalRole, 'name': 'Original: $originalRole'},
+                          ..._workers.where((w) => w.role != originalRole).map((w) => 
+                            {'role': w.role, 'name': '${w.name} (${w.role})'}
+                          ),
+                        ];
+                        
+                        return Container(
+                          margin: const EdgeInsets.only(bottom: 8),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.grey.shade200),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(children: [
+                                Container(
+                                  width: 8, height: 8,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF1F4E79),
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text(originalRole,
+                                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                                const Spacer(),
+                                Text('₹${fmt.format(cost)} per piece',
+                                    style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
+                              ]),
+                              const SizedBox(height: 8),
+                              Row(children: [
+                                const Icon(Icons.arrow_forward, size: 14, color: Color(0xFF888888)),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    value: currentOverride ?? originalRole,
+                                    decoration: InputDecoration(
+                                      isDense: true,
+                                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                      border: OutlineInputBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                        borderSide: BorderSide.none,
+                                      ),
+                                      filled: true,
+                                      fillColor: const Color(0xFFF5F6FA),
+                                    ),
+                                    items: availableWorkers.map((w) {
+                                      return DropdownMenuItem(
+                                        value: w['role'],
+                                        child: Row(children: [
+                                          if (w['role'] == originalRole)
+                                            const Icon(Icons.refresh, size: 14, color: Color(0xFF1F4E79)),
+                                          const SizedBox(width: 4),
+                                          Expanded(
+                                            child: Text(w['name']!,
+                                                style: const TextStyle(fontSize: 12),
+                                                overflow: TextOverflow.ellipsis),
+                                          ),
+                                        ]),
+                                      );
+                                    }).toList(),
+                                    onChanged: (newRole) {
+                                      setState(() {
+                                        if (newRole != null) {
+                                          if (newRole == originalRole) {
+                                            _workerOverrides.remove(originalRole);
+                                          } else {
+                                            _workerOverrides[originalRole] = newRole;
+                                          }
+                                        }
+                                      });
+                                    },
+                                  ),
+                                ),
+                              ]),
+                              if (ratePerKg > 0 && qty > 0)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(
+                                    'Earns: ₹${fmt.format(ratePerKg)}/kg × $qty kg = ₹${fmt.format(earnings)}',
+                                    style: TextStyle(fontSize: 10, 
+                                        color: earnings > 0 ? const Color(0xFF1A6B2A) : const Color(0xFF888888),
+                                        fontWeight: earnings > 0 ? FontWeight.w500 : FontWeight.normal),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+              ]),
             ),
-          ),
 
-        TextField(
-          controller: _qty,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          decoration: InputDecoration(
-            labelText: 'Quantity (${_product?.unit ?? 'kg / pcs'})',
-            suffixText: _product?.unit,
-            filled: true, fillColor: const Color(0xFFF5F6FA),
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none),
-          ),
-          onChanged: (_) => _recalc(),
-        ),
-        const SizedBox(height: 14),
-
-        if (_profit != 0)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            decoration: BoxDecoration(
-              color: _profit >= 0 ? const Color(0xFFC6EFCE) : const Color(0xFFFFCCCC),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Column(children: [
-              Text('Profit: Rs ${fmt.format(_profit)}',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16,
-                      color: _profit >= 0 ? const Color(0xFF1A6B2A) : Colors.red),
-                  textAlign: TextAlign.center),
-              if (_customPrice)
-                Text('(Custom price: Rs ${fmt.format(_effectivePrice)}/kg)',
-                    style: const TextStyle(fontSize: 11, color: Color(0xFF555555))),
+          // Price override section
+          if (_product != null)
+            Row(children: [
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Change sale price?',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                Text('Default: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg',
+                    style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
+              ])),
+              Switch(value: _customPrice,
+                  onChanged: (v) { setState(() => _customPrice = v); _recalc(); },
+                  activeColor: const Color(0xFF1F4E79)),
             ]),
-          ),
-        const SizedBox(height: 14),
 
-        SizedBox(
-          width: double.infinity, height: 52,
-          child: ElevatedButton(
-            onPressed: (_product == null || _qty.text.isEmpty || _saving) ? null : _save,
-            style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF1F4E79),
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-            child: _saving
-                ? const SizedBox(width: 22, height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                : const Text('Save Sale',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          if (_customPrice && _product != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10, top: 4),
+              child: TextField(
+                controller: _priceCtrl,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'Sale price per kg (Rs)',
+                  prefixText: 'Rs ', suffixText: '/kg',
+                  filled: true, fillColor: const Color(0xFFFFF8E1),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide.none),
+                ),
+                onChanged: (_) => _recalc(),
+              ),
+            ),
+
+          TextField(
+            controller: _qty,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: InputDecoration(
+              labelText: 'Quantity (${_product?.unit ?? 'kg / pcs'})',
+              suffixText: _product?.unit,
+              filled: true, fillColor: const Color(0xFFF5F6FA),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none),
+            ),
+            onChanged: (_) => _recalc(),
           ),
-        ),
-      ])),
+          const SizedBox(height: 14),
+
+          if (_profit != 0)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              decoration: BoxDecoration(
+                color: _profit >= 0 ? const Color(0xFFC6EFCE) : const Color(0xFFFFCCCC),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Column(children: [
+                Text('Profit: Rs ${fmt.format(_profit)}',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16,
+                        color: _profit >= 0 ? const Color(0xFF1A6B2A) : Colors.red),
+                    textAlign: TextAlign.center),
+                if (_customPrice)
+                  Text('(Custom price: Rs ${fmt.format(_effectivePrice)}/kg)',
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF555555))),
+              ]),
+            ),
+          const SizedBox(height: 14),
+
+          SizedBox(
+            width: double.infinity, height: 52,
+            child: ElevatedButton(
+              onPressed: (_product == null || _qty.text.isEmpty || _saving) ? null : _save,
+              style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1F4E79),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+              child: _saving
+                  ? const SizedBox(width: 22, height: 22,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Text('Save Sale',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ]),
+      ),
     );
   }
 }

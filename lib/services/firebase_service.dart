@@ -1,16 +1,14 @@
 // lib/services/firebase_service.dart
 // My Pattarii
 // KEY FEATURES:
-// 1. Device license check
+// 1. Registration key check (hardcoded: Mathavan@367)
 // 2. Worker salary calculated PER PRODUCT from sales
 // 3. Plasma 1 & Plasma 2 as separate cost fields
 // 4. Buyer transactions: advance / payment / latePayment / refund
 // 5. Worker transactions: salaryPaid / advance / bonus / deduction
 
-import 'dart:io';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:device_info_plus/device_info_plus.dart';
 import '../models/models.dart';
 
 class FirebaseService {
@@ -23,63 +21,32 @@ class FirebaseService {
   User? get currentUser => _auth.currentUser;
   String get uid        => _auth.currentUser!.uid;
 
+  // Hardcoded registration key
+  static const String _validRegistrationKey = 'Mathavan@367';
+
   CollectionReference<Map<String, dynamic>> _col(String name) =>
       _db.collection('users').doc(uid).collection(name);
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // DEVICE LICENSE
-  // ══════════════════════════════════════════════════════════════════════════
-
-  Future<String> _getDeviceId() async {
-    try {
-      final info = DeviceInfoPlugin();
-      if (Platform.isAndroid) {
-        final android = await info.androidInfo;
-        return android.id;
-      }
-      return 'unknown-platform';
-    } catch (_) { return 'unknown'; }
-  }
-
-  Future<void> registerDevice() async {
-    final deviceId = await _getDeviceId();
-    final userDoc  = _db.collection('users').doc(uid);
-    final snap     = await userDoc.get();
-    final data     = snap.data() ?? {};
-    final List<dynamic> devices = data['registeredDevices'] ?? [];
-    if (!devices.contains(deviceId)) {
-      devices.add(deviceId);
-      await userDoc.set({'registeredDevices': devices}, SetOptions(merge: true));
-    }
-  }
-
-  Future<bool> isDeviceLicensed() async {
-    try {
-      final deviceId = await _getDeviceId();
-      final snap = await _db.collection('users').doc(uid).get();
-      final data = snap.data() ?? {};
-      final List<dynamic> devices = data['registeredDevices'] ?? [];
-      if (devices.isEmpty) {
-        await registerDevice();
-        return true;
-      }
-      return devices.contains(deviceId);
-    } catch (_) { return false; }
-  }
 
   // ══════════════════════════════════════════════════════════════════════════
   // AUTH
   // ══════════════════════════════════════════════════════════════════════════
 
-  Future<UserCredential> register(String email, String password, String name) async {
+  /// Register with email, password, name, and registration key
+  /// Returns true if registration is successful, throws error if key is invalid
+  Future<UserCredential> register(String email, String password, String name, String registrationKey) async {
+    // Check registration key first
+    if (registrationKey != _validRegistrationKey) {
+      throw Exception('invalid-registration-key');
+    }
+    
     final cred = await _auth.createUserWithEmailAndPassword(
         email: email, password: password);
     await cred.user!.updateDisplayName(name);
-    final deviceId = await _getDeviceId();
     await _db.collection('users').doc(cred.user!.uid).set({
-      'name': name, 'email': email, 'target': 30000,
+      'name': name, 
+      'email': email, 
+      'target': 30000,
       'createdAt': FieldValue.serverTimestamp(),
-      'registeredDevices': [deviceId],
     });
     await _seedProducts(cred.user!.uid);
     return cred;
@@ -89,7 +56,6 @@ class FirebaseService {
     final cred = await _auth.signInWithEmailAndPassword(
         email: email, password: password);
     await _ensureSeeded(cred.user!.uid);
-    await registerDevice();
     return cred;
   }
 
@@ -108,106 +74,6 @@ class FirebaseService {
     for (final p in _defaultProducts) batch.set(col.doc(), p.toMap());
     await batch.commit();
   }
-
- // Add these methods to your FirebaseService class in firebase_service.dart
-
-// ══════════════════════════════════════════════════════════════════════════
-// SIMPLE TRANSACTIONS (Credit/Debit) - Add this section
-// ══════════════════════════════════════════════════════════════════════════
-
-// Get buyer simple transactions (payments received)
-Future<List<SimpleTransaction>> getBuyerSimpleTransactions(String buyerId) async {
-  final q = await _col('simpleTransactions')
-      .where('buyerId', isEqualTo: buyerId)
-      .get();
-  return q.docs.map((d) => SimpleTransaction.fromMap(d.id, d.data())).toList();
-}
-
-// Stream of all buyer simple transactions
-Stream<List<SimpleTransaction>> allBuyerSimpleTransactionsStream() {
-  return _col('simpleTransactions')
-      .snapshots()
-      .map((s) => s.docs
-          .map((d) => SimpleTransaction.fromMap(d.id, d.data()))
-          .toList());
-}
-
-// Stream for specific buyer
-Stream<List<SimpleTransaction>> buyerSimpleTransactionsStream(String buyerId) {
-  return _col('simpleTransactions')
-      .where('buyerId', isEqualTo: buyerId)
-      .snapshots()
-      .map((s) => s.docs
-          .map((d) => SimpleTransaction.fromMap(d.id, d.data()))
-          .toList());
-}
-
-// Add simple transaction (Credit or Debit)
-Future<void> addSimpleTransaction(SimpleTransaction tx) async {
-  await _col('simpleTransactions').add(tx.toMap());
-}
-
-// Delete simple transaction
-Future<void> deleteSimpleTransaction(String id) async {
-  await _col('simpleTransactions').doc(id).delete();
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// WORKER SIMPLE TRANSACTIONS - Add this section
-// ══════════════════════════════════════════════════════════════════════════
-
-// Get worker simple transactions (payments made to worker)
-Future<List<WorkerSimpleTransaction>> getWorkerSimpleTransactions(String workerId) async {
-  final q = await _col('workerSimpleTransactions')
-      .where('workerId', isEqualTo: workerId)
-      .get();
-  return q.docs.map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data())).toList();
-}
-
-// Stream of all worker simple transactions
-Stream<List<WorkerSimpleTransaction>> allWorkerSimpleTransactionsStream() {
-  return _col('workerSimpleTransactions')
-      .snapshots()
-      .map((s) => s.docs
-          .map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data()))
-          .toList());
-}
-
-// Stream for specific worker
-Stream<List<WorkerSimpleTransaction>> workerSimpleTransactionsStream(String workerId) {
-  return _col('workerSimpleTransactions')
-      .where('workerId', isEqualTo: workerId)
-      .snapshots()
-      .map((s) => s.docs
-          .map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data()))
-          .toList());
-}
-
-// Add worker simple transaction
-Future<void> addWorkerSimpleTransaction(WorkerSimpleTransaction tx) async {
-  await _col('workerSimpleTransactions').add(tx.toMap());
-}
-
-// Delete worker simple transaction
-Future<void> deleteWorkerSimpleTransaction(String id) async {
-  await _col('workerSimpleTransactions').doc(id).delete();
-}
-
-// ══════════════════════════════════════════════════════════════════════════
-// GET ALL SALES - Add this method if not present
-// ══════════════════════════════════════════════════════════════════════════
-
-
-// Get all sales (for buyer totals calculation)
-Future<List<Sale>> getAllSales() async {
-  final q = await _col('sales').get();
-  return q.docs.map((d) => Sale.fromMap(d.id, d.data())).toList();
-}
-
-
-
-
-
 
   static final _defaultProducts = [
     Product(name:'SS-I (1½ padii)',      category:'SS',    padii:'1½ padii',
@@ -498,6 +364,98 @@ Future<List<Sale>> getAllSales() async {
     final list = q.docs.map((d) => Expense.fromMap(d.id, d.data())).toList();
     list.sort((a, b) => a.date.compareTo(b.date));
     return list;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SIMPLE TRANSACTIONS (Credit/Debit)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Get buyer simple transactions (payments received)
+  Future<List<SimpleTransaction>> getBuyerSimpleTransactions(String buyerId) async {
+    final q = await _col('simpleTransactions')
+        .where('buyerId', isEqualTo: buyerId)
+        .get();
+    return q.docs.map((d) => SimpleTransaction.fromMap(d.id, d.data())).toList();
+  }
+
+  // Stream of all buyer simple transactions
+  Stream<List<SimpleTransaction>> allBuyerSimpleTransactionsStream() {
+    return _col('simpleTransactions')
+        .snapshots()
+        .map((s) => s.docs
+            .map((d) => SimpleTransaction.fromMap(d.id, d.data()))
+            .toList());
+  }
+
+  // Stream for specific buyer
+  Stream<List<SimpleTransaction>> buyerSimpleTransactionsStream(String buyerId) {
+    return _col('simpleTransactions')
+        .where('buyerId', isEqualTo: buyerId)
+        .snapshots()
+        .map((s) => s.docs
+            .map((d) => SimpleTransaction.fromMap(d.id, d.data()))
+            .toList());
+  }
+
+  // Add simple transaction (Credit or Debit)
+  Future<void> addSimpleTransaction(SimpleTransaction tx) async {
+    await _col('simpleTransactions').add(tx.toMap());
+  }
+
+  // Delete simple transaction
+  Future<void> deleteSimpleTransaction(String id) async {
+    await _col('simpleTransactions').doc(id).delete();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // WORKER SIMPLE TRANSACTIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Get worker simple transactions (payments made to worker)
+  Future<List<WorkerSimpleTransaction>> getWorkerSimpleTransactions(String workerId) async {
+    final q = await _col('workerSimpleTransactions')
+        .where('workerId', isEqualTo: workerId)
+        .get();
+    return q.docs.map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data())).toList();
+  }
+
+  // Stream of all worker simple transactions
+  Stream<List<WorkerSimpleTransaction>> allWorkerSimpleTransactionsStream() {
+    return _col('workerSimpleTransactions')
+        .snapshots()
+        .map((s) => s.docs
+            .map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data()))
+            .toList());
+  }
+
+  // Stream for specific worker
+  Stream<List<WorkerSimpleTransaction>> workerSimpleTransactionsStream(String workerId) {
+    return _col('workerSimpleTransactions')
+        .where('workerId', isEqualTo: workerId)
+        .snapshots()
+        .map((s) => s.docs
+            .map((d) => WorkerSimpleTransaction.fromMap(d.id, d.data()))
+            .toList());
+  }
+
+  // Add worker simple transaction
+  Future<void> addWorkerSimpleTransaction(WorkerSimpleTransaction tx) async {
+    await _col('workerSimpleTransactions').add(tx.toMap());
+  }
+
+  // Delete worker simple transaction
+  Future<void> deleteWorkerSimpleTransaction(String id) async {
+    await _col('workerSimpleTransactions').doc(id).delete();
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // GET ALL SALES
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // Get all sales (for buyer totals calculation)
+  Future<List<Sale>> getAllSales() async {
+    final q = await _col('sales').get();
+    return q.docs.map((d) => Sale.fromMap(d.id, d.data())).toList();
   }
 
   // ══════════════════════════════════════════════════════════════════════════

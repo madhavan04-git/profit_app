@@ -4,7 +4,7 @@
 //   Labour 1, Labour 2, Labour 3, Labour 4,
 //   Runner 1, Runner 2, Polish 1, Polish 2,
 //   Vettu 1, Vettu 2, Welding 1, Welding 2,
-//   Spinner 1, Spinner 2, Plasma, Varai
+//   Spinner 1, Spinner 2, Plasma 1, Plasma 2, Varai
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -133,6 +133,7 @@ class _WorkerFormState extends State<_WorkerForm> {
   bool _saving = false;
 
   // All valid roles — must match product cost field keys
+  // Updated to include Plasma 1 and Plasma 2 separately
   static const _roles = [
     'Labour 1', 'Labour 2', 'Labour 3', 'Labour 4',
     'Runner 1', 'Runner 2',
@@ -140,7 +141,7 @@ class _WorkerFormState extends State<_WorkerForm> {
     'Vettu 1',  'Vettu 2',
     'Welding 1','Welding 2',
     'Spinner 1','Spinner 2',
-    'Plasma',
+    'Plasma 1', 'Plasma 2',  // Changed from 'Plasma' to 'Plasma 1', 'Plasma 2'
     'Varai',
   ];
 
@@ -150,7 +151,10 @@ class _WorkerFormState extends State<_WorkerForm> {
     _name = TextEditingController(text: widget.worker?.name ?? '');
     _wage = TextEditingController(text: widget.worker?.dailyWage.toString() ?? '');
     _role = widget.worker?.role;
-    // Migrate old roles if needed
+    // Migrate old roles if needed (convert 'Plasma' to 'Plasma 1' as default)
+    if (_role == 'Plasma') {
+      _role = 'Plasma 1';
+    }
     if (_role != null && !_roles.contains(_role)) _role = null;
   }
   @override
@@ -192,7 +196,7 @@ class _WorkerFormState extends State<_WorkerForm> {
                 borderSide: BorderSide.none)),
         ),
         const SizedBox(height: 10),
-        // Role dropdown — all valid roles
+        // Role dropdown — all valid roles including Plasma 1 and Plasma 2
         DropdownButtonFormField<String>(
           value: _role,
           hint: const Text('Select role *'),
@@ -221,7 +225,8 @@ class _WorkerFormState extends State<_WorkerForm> {
           child: const Text(
             '💡 Monthly salary is auto-calculated from sales:\n'
             'Worker earns = (their cost in product) × (qty sold)\n'
-            'e.g. Plasma worker at Rs 5/piece × 20kg sold = Rs 100',
+            'e.g. Plasma 1 worker at Rs 12.5/piece × 20kg sold = Rs 250\n'
+            'Note: Plasma 1 and Plasma 2 have separate cost fields in products.',
             style: TextStyle(fontSize: 11, color: Color(0xFF7B4F06))),
         ),
         const SizedBox(height: 16),

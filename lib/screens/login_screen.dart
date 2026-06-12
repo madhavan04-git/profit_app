@@ -22,6 +22,7 @@ class _LoginScreenState extends State<LoginScreen>
   final _remail = TextEditingController();
   final _rpass  = TextEditingController();
   final _rpass2 = TextEditingController();
+  final _regKey = TextEditingController(); // New registration key field
 
   bool _loading = false;
   bool _showPass = false;
@@ -36,7 +37,7 @@ class _LoginScreenState extends State<LoginScreen>
   @override
   void dispose() {
     _tabs.dispose();
-    for (final c in [_lemail, _lpass, _rname, _remail, _rpass, _rpass2]) c.dispose();
+    for (final c in [_lemail, _lpass, _rname, _remail, _rpass, _rpass2, _regKey]) c.dispose();
     super.dispose();
   }
 
@@ -44,9 +45,10 @@ class _LoginScreenState extends State<LoginScreen>
     if (!_loginForm.currentState!.validate()) return;
     setState(() { _loading = true; _error = null; });
     try {
-      await FirebaseService.instance.login(_lemail.text.trim(), _lpass.text, );
+      await FirebaseService.instance.login(_lemail.text.trim(), _lpass.text);
+      if (!mounted) return;
     } catch (e) {
-      setState(() => _error = _friendlyError(e.toString()));
+      if (mounted) setState(() => _error = _friendlyError(e.toString()));
     }
     if (mounted) setState(() => _loading = false);
   }
@@ -58,32 +60,38 @@ class _LoginScreenState extends State<LoginScreen>
       return;
     }
     setState(() { _loading = true; _error = null; });
-try {
-  await FirebaseService.instance.register(
-    _remail.text.trim(),
-    _rpass.text,
-    _rname.text.trim(),
-  );
+    try {
+      await FirebaseService.instance.register(
+        _remail.text.trim(),
+        _rpass.text,
+        _rname.text.trim(),
+        _regKey.text.trim(), // Pass the registration key
+      );
 
-  if (!mounted) return;
+      if (!mounted) return;
 
-    setState(() {
-      _tabs.index = 0; // switch to login tab
-    });
-} catch (e) {
-  if (!mounted) return;
-
-  setState(() {
-    _error = _friendlyError(e.toString());
-  });
-} finally {
-  if (mounted) {
-    setState(() {
-      _loading = false;
-    });
-  }
-}
-    if (mounted) setState(() => _loading = false);
+      setState(() {
+        _tabs.index = 0; // switch to login tab
+        _error = 'Registration successful! Please login.';
+        // Clear registration form
+        _rname.clear();
+        _remail.clear();
+        _rpass.clear();
+        _rpass2.clear();
+        _regKey.clear();
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = _friendlyError(e.toString());
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+        });
+      }
+    }
   }
 
   String _friendlyError(String e) {
@@ -93,6 +101,7 @@ try {
     if (e.contains('weak-password'))        return 'Password must be at least 6 characters.';
     if (e.contains('invalid-email'))        return 'Invalid email address.';
     if (e.contains('network-request-failed')) return 'No internet connection.';
+    if (e.contains('invalid-registration-key')) return 'Invalid registration key. Access denied.';
     return 'Error. Please try again.';
   }
 
@@ -107,30 +116,19 @@ try {
             const SizedBox(height: 32),
 
             // ── Logo ─────────────────────────────────────────────────────
-           Container(
-  width: 90,
-  height: 90,
-  // decoration: BoxDecoration(
-  //   color: const Color(0xFF1F4E79),
-  //   borderRadius: BorderRadius.circular(24),
-  //   // boxShadow: [
-  //   //   BoxShadow(
-  //   //     color: const Color(0xFF1F4E79).withOpacity(0.3),
-  //   //     blurRadius: 16,
-  //   //     offset: const Offset(0, 6),
-  //   //   )
-  //   // ],
-  // ),
-  child: Center(
-    child: Padding(
-      padding: const EdgeInsets.all(14), // 👈 controls spacing
-      child: Image.asset(
-        'assets/icon/logo4.png',
-        fit: BoxFit.contain, // 👈 IMPORTANT
-      ),
-    ),
-  ),
-),
+            Container(
+              width: 90,
+              height: 90,
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Image.asset(
+                    'assets/icon/logo4.png',
+                    fit: BoxFit.contain,
+                  ),
+                ),
+              ),
+            ),
             const SizedBox(height: 16),
 
             // ── App name ──────────────────────────────────────────────────
@@ -174,22 +172,29 @@ try {
                 ),
                 const SizedBox(height: 20),
 
-                // Error
+                // Error/Success message
                 if (_error != null)
                   Container(
                     width: double.infinity,
                     padding: const EdgeInsets.all(12),
                     margin: const EdgeInsets.only(bottom: 16),
                     decoration: BoxDecoration(
-                      color: const Color(0xFFFFCCCC),
+                      color: _error!.contains('successful') 
+                          ? const Color(0xFFCCFFCC) 
+                          : const Color(0xFFFFCCCC),
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(_error!,
-                        style: const TextStyle(color: Color(0xFFBB3333), fontSize: 13)),
+                        style: TextStyle(
+                          color: _error!.contains('successful') 
+                              ? const Color(0xFF336633) 
+                              : const Color(0xFFBB3333), 
+                          fontSize: 13
+                        )),
                   ),
 
                 SizedBox(
-                  height: 360,
+                  height: 420, // Increased height to accommodate new field
                   child: TabBarView(
                     controller: _tabs,
                     children: [
@@ -217,6 +222,9 @@ try {
                           _passField(_rpass, 'Password (min 6 chars)'),
                           const SizedBox(height: 12),
                           _passField(_rpass2, 'Confirm password'),
+                          const SizedBox(height: 12),
+                          _field(_regKey, 'Registration Key', Icons.vpn_key,
+                              type: TextInputType.text),
                           const SizedBox(height: 24),
                           _submitBtn('Create account', _register),
                         ]),
