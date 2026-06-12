@@ -1,5 +1,5 @@
 // lib/screens/buyer_transactions_screen.dart
-// Fixed - Statement showing proper amounts
+// Fixed - Statement showing proper amounts with direct total amount edit
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -266,6 +266,7 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
                         ...items.map((item) => _StatementItemRow(
                           item: item,
                           fmt: _fmt,
+                          onEdit: () => _editStatementItem(buyer, item),
                         )),
                       ],
                     ),
@@ -290,13 +291,26 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
     
     for (final sale in salesForBuyer) {
       final amount = sale.qty * sale.salePrice;
-      print('Sale: ${sale.productName} - ${sale.qty} kg - Amount: $amount');
+      final isPieceProduct = sale.soldByPiece == true;
+      final unit = isPieceProduct ? 'pcs' : 'kg';
+      
+      print('Sale: ${sale.productName} - ${sale.qty} $unit - Amount: $amount');
       items.add(StatementItem(
         id: 'sale_${sale.id}',
         date: sale.date,
         type: 'credit',
         amount: amount,
-        description: 'Sale: ${sale.productName} (${sale.qty} kg @ Rs ${_fmt.format(sale.salePrice)}/kg)',
+        description: isPieceProduct
+            ? 'Sale: ${sale.productName} (${sale.qty} $unit @ ₹${_fmt.format(sale.salePrice)}/$unit)'
+            : 'Sale: ${sale.productName} (${sale.qty} $unit @ ₹${_fmt.format(sale.salePrice)}/$unit)',
+        originalData: {
+          'saleId': sale.id,
+          'qty': sale.qty,
+          'salePrice': sale.salePrice,
+          'productName': sale.productName,
+          'soldByPiece': sale.soldByPiece ?? false,
+          'unit': sale.unit ?? 'kg',
+        },
       ));
     }
     
@@ -312,6 +326,7 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
         type: 'debit',
         amount: payment.amount,
         description: payment.note.isNotEmpty ? payment.note : 'Payment Received',
+        originalData: {'paymentId': payment.id, 'note': payment.note},
       ));
     }
     
@@ -334,6 +349,289 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
     items.sort((a, b) => b.date.compareTo(a.date));
     
     return items;
+  }
+
+  Future<void> _editStatementItem(Buyer buyer, StatementItem item) async {
+    if (item.type == 'credit') {
+      // Edit sale amount - DIRECT TOTAL AMOUNT EDIT
+      await _showEditSaleAmountDialog(buyer, item);
+    } else {
+      // Edit payment
+      await _showEditPaymentDialog(buyer, item);
+    }
+    
+    // Refresh the statement
+    await _refreshStatement(buyer.id!);
+    await _loadSalesTotals();
+    setState(() {});
+  }
+
+  // NEW: Direct total amount edit dialog - Just enter the total sale amount
+  Future<void> _showEditSaleAmountDialog(Buyer buyer, StatementItem item) async {
+    final saleId = item.originalData?['saleId'];
+    final currentAmount = item.amount;
+    final currentQty = item.originalData?['qty'] ?? 0.0;
+    final currentPrice = item.originalData?['salePrice'] ?? 0.0;
+    final isPieceProduct = item.originalData?['soldByPiece'] ?? false;
+    final unit = isPieceProduct ? 'pcs' : 'kg';
+    
+    final amountController = TextEditingController(text: currentAmount.toString());
+    
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          double newAmount = double.tryParse(amountController.text) ?? 0;
+          
+          // Calculate new price based on new amount (keeping quantity same)
+          // newAmount = qty * newPrice => newPrice = newAmount / qty
+          double newPrice = currentQty > 0 ? newAmount / currentQty : 0;
+          
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.edit, color: Color(0xFF1F4E79)),
+                const SizedBox(width: 8),
+                Text('Edit Sale Amount - ${buyer.name}'),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Product: ${item.originalData?['productName']}',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Quantity: ${currentQty.toStringAsFixed(2)} $unit',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        const Divider(height: 16),
+                        Text(
+                          'Current Total: ₹${_fmt.format(currentAmount)}',
+                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                        ),
+                        Text(
+                          '(₹${_fmt.format(currentPrice)} per $unit)',
+                          style: const TextStyle(fontSize: 11, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Enter the total sale amount:',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: amountController,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: 'Total Amount (₹)',
+                      hintText: 'Enter total amount',
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.currency_rupee),
+                      suffixText: '₹',
+                    ),
+                    onChanged: (value) => setDialogState(() {}),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'New Calculation:',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('New Price per $unit:', style: const TextStyle(fontSize: 12)),
+                            Text(
+                              '₹${_fmt.format(newPrice)}',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                                color: Colors.blue.shade800,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const Divider(),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'New Total Amount:',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                            ),
+                            Text(
+                              '₹ ${_fmt.format(newAmount)}',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 18,
+                                color: Colors.green.shade700,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  final newAmount = double.tryParse(amountController.text);
+                  
+                  if (newAmount != null && newAmount > 0 && saleId != null) {
+                    // Calculate new price
+                    final newPrice = newAmount / currentQty;
+                    
+                    // Update the sale in Firebase with new price (keeping quantity same)
+                    await _svc.updateSalePrice(saleId, newPrice);
+                    
+                    if (mounted) {
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Sale amount updated from ₹${_fmt.format(currentAmount)} to ₹${_fmt.format(newAmount)}'),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    }
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Please enter a valid amount')),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.save),
+                label: const Text('Save Changes'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1F4E79),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _showEditPaymentDialog(Buyer buyer, StatementItem item) async {
+    final paymentId = item.originalData?['paymentId'];
+    final currentAmount = item.amount;
+    final currentNote = item.originalData?['note'] ?? '';
+    
+    final amountController = TextEditingController(text: currentAmount.toString());
+    final noteController = TextEditingController(text: currentNote);
+    
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.payment, color: Color(0xFF1F4E79)),
+            const SizedBox(width: 8),
+            Text('Edit Payment - ${buyer.name}'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: amountController,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Amount (₹)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.currency_rupee),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: noteController,
+              decoration: const InputDecoration(
+                labelText: 'Note',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.note),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton.icon(
+            onPressed: () async {
+              if (paymentId != null) {
+                await _svc.deleteSimpleTransaction(paymentId);
+                if (mounted) Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Payment deleted')),
+                );
+              }
+            },
+            icon: const Icon(Icons.delete, color: Colors.red),
+            label: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              final newAmount = double.tryParse(amountController.text);
+              final newNote = noteController.text;
+              
+              if (newAmount != null && newAmount > 0 && paymentId != null) {
+                await _svc.updateSimpleTransaction(
+                  paymentId,
+                  amount: newAmount,
+                  note: newNote,
+                );
+                if (mounted) Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Payment updated successfully')),
+                );
+              }
+            },
+            icon: const Icon(Icons.update),
+            label: const Text('Update'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1F4E79),
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _emptyStatement() => Center(
@@ -366,14 +664,15 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
   }
 }
 
-// ── Statement Item Model ──────────────────────────────────────────────
+// ── Statement Item Model (UPDATED with originalData) ──────────────────────────────
 class StatementItem {
   final String id;
   final DateTime date;
   final String type; // 'credit' or 'debit'
-  final double amount;
+  double amount;
   final String description;
   double balance;
+  final Map<String, dynamic>? originalData;
 
   StatementItem({
     required this.id,
@@ -382,6 +681,7 @@ class StatementItem {
     required this.amount,
     required this.description,
     this.balance = 0,
+    this.originalData,
   });
 }
 
@@ -608,14 +908,16 @@ class _BalanceCard extends StatelessWidget {
   }
 }
 
-// ── Statement Item Row (Like PhonePe History) ─────────────────────────────
+// ── Statement Item Row (UPDATED with Edit button) ─────────────────────────────
 class _StatementItemRow extends StatelessWidget {
   final StatementItem item;
   final NumberFormat fmt;
+  final VoidCallback onEdit;
 
   const _StatementItemRow({
     required this.item,
     required this.fmt,
+    required this.onEdit,
   });
 
   @override
@@ -623,41 +925,56 @@ class _StatementItemRow extends StatelessWidget {
     final isCredit = item.type == 'credit';
     final amountColor = isCredit ? const Color(0xFF1A6B2A) : const Color(0xFFCC4444);
     final amountPrefix = isCredit ? '+' : '-';
-    final title = isCredit ? 'Credit - Sale' : 'Debit - Payment';
+    final title = isCredit ? '💰 Sale' : '💳 Payment';
 
-    return Container(
+    return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade100),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.02),
-            blurRadius: 2,
-            offset: const Offset(0, 1),
-          ),
-        ],
+        side: BorderSide(color: Colors.grey.shade200),
       ),
-      child: Column(
-        children: [
-          Row(
+      child: InkWell(
+        onTap: onEdit,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: Color(0xFF333333),
-                      ),
+                    Row(
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF333333),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1F4E79).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.edit, size: 12, color: Color(0xFF1F4E79)),
+                              SizedBox(width: 2),
+                              Text('Edit', style: TextStyle(fontSize: 10, color: Color(0xFF1F4E79))),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 6),
                     Text(
                       item.description,
                       style: const TextStyle(
@@ -674,7 +991,7 @@ class _StatementItemRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    '$amountPrefix Rs ${fmt.format(item.amount)}',
+                    '$amountPrefix ₹ ${fmt.format(item.amount)}',
                     style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.bold,
@@ -683,7 +1000,7 @@ class _StatementItemRow extends StatelessWidget {
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    'Bal: Rs ${fmt.format(item.balance)}',
+                    'Balance: ₹ ${fmt.format(item.balance)}',
                     style: const TextStyle(
                       fontSize: 10,
                       color: Color(0xFF888888),
@@ -693,7 +1010,7 @@ class _StatementItemRow extends StatelessWidget {
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -792,8 +1109,8 @@ class _PaymentFormState extends State<_PaymentForm> {
           controller: _amountCtrl,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: InputDecoration(
-            labelText: 'Amount (Rs) *',
-            prefixText: 'Rs ',
+            labelText: 'Amount (₹) *',
+            prefixText: '₹ ',
             filled: true,
             fillColor: const Color(0xFFF5F6FA),
             border: OutlineInputBorder(

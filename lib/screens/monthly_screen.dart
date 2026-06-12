@@ -1,7 +1,5 @@
 // lib/screens/monthly_screen.dart
-// Full monthly report fetched from Firebase Firestore.
-// Tabs: Overview | Sales | Buyers | Workers | Expenses
-// Year view shows all 12 months at a glance.
+// Full monthly report with Yearly & Overall Profit
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -27,10 +25,15 @@ class _MonthlyScreenState extends State<MonthlyScreen>
   bool _yearView = false;
   Map<int, double> _yearMap = {}; // month(1-12) → profit
 
+  // NEW: yearly & overall profit
+  double _yearProfit = 0;
+  double _overallProfit = 0;
+  bool _loadingExtra = true;
+
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 5, vsync: this);
+    _tabs = TabController(length: 6, vsync: this); // 6 tabs now (added Materials)
     _load();
   }
 
@@ -41,7 +44,18 @@ class _MonthlyScreenState extends State<MonthlyScreen>
     setState(() => _loading = true);
     try {
       final summary = await _svc.monthlySummary(_month.year, _month.month);
-      setState(() { _summary = summary; _loading = false; });
+      // Load year & overall profit in parallel
+      final results = await Future.wait([
+        _svc.yearlyTotalProfit(_month.year),
+        _svc.overallTotalProfit(),
+      ]);
+      setState(() {
+        _summary = summary;
+        _yearProfit = results[0];
+        _overallProfit = results[1];
+        _loading = false;
+        _loadingExtra = false;
+      });
     } catch (e) {
       setState(() => _loading = false);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
@@ -52,7 +66,6 @@ class _MonthlyScreenState extends State<MonthlyScreen>
   Future<void> _loadYearView() async {
     setState(() => _yearView = true);
     final Map<int, double> map = {};
-    // Load all months in parallel
     final futures = List.generate(12, (i) =>
         _svc.monthlyTotalProfit(_month.year, i + 1));
     final results = await Future.wait(futures);
@@ -78,12 +91,12 @@ class _MonthlyScreenState extends State<MonthlyScreen>
     setState(() => _pdfLoading = true);
     try {
       await PdfService.generateMonthlyReport(
-  month: _month,
-  sales: s.sales,
-  dailyMap: s.dailyMap,
-  productMap: s.productMap,
-  totalProfit: s.totalProfit,
-);
+        month: _month,
+        sales: s.sales,
+        dailyMap: s.dailyMap,
+        productMap: s.productMap,
+        totalProfit: s.totalProfit,
+      );
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('PDF saved & shared'),
               backgroundColor: Color(0xFF1A6B2A)));
@@ -114,6 +127,7 @@ class _MonthlyScreenState extends State<MonthlyScreen>
             Tab(text: 'Buyers'),
             Tab(text: 'Workers'),
             Tab(text: 'Expenses'),
+            Tab(text: 'Materials'),
           ],
         ),
         actions: [
@@ -151,7 +165,6 @@ class _MonthlyScreenState extends State<MonthlyScreen>
               },
             )
           : Column(children: [
-              // Month selector
               _MonthSelector(
                 month: _month,
                 onPrev: _prevMonth,
@@ -167,11 +180,19 @@ class _MonthlyScreenState extends State<MonthlyScreen>
                   child: TabBarView(
                     controller: _tabs,
                     children: [
-                      _OverviewTab(summary: _summary!, month: _month, fmt: _fmt, fmtInt: _fmtInt),
+                      _OverviewTab(
+                        summary: _summary!,
+                        month: _month,
+                        fmt: _fmt,
+                        fmtInt: _fmtInt,
+                        yearProfit: _yearProfit,
+                        overallProfit: _overallProfit,
+                      ),
                       _SalesTab(summary: _summary!, fmt: _fmt),
                       _BuyersTab(summary: _summary!, fmt: _fmt, fmtInt: _fmtInt),
                       _WorkersTab(summary: _summary!, fmt: _fmt, fmtInt: _fmtInt),
                       _ExpensesTab(summary: _summary!, fmt: _fmt, fmtInt: _fmtInt),
+                      _MaterialsTab(summary: _summary!, fmt: _fmt, fmtInt: _fmtInt),
                     ],
                   ),
                 ),
@@ -180,7 +201,7 @@ class _MonthlyScreenState extends State<MonthlyScreen>
   }
 }
 
-// ── Month selector ────────────────────────────────────────────────────────────
+// ── Month selector (unchanged) ────────────────────────────────────────────
 class _MonthSelector extends StatelessWidget {
   final DateTime month;
   final VoidCallback onPrev, onNext;
@@ -206,14 +227,23 @@ class _MonthSelector extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// TAB 1 — OVERVIEW
+// TAB 1 — OVERVIEW (UPDATED with Year Profit & Overall Profit)
 // ══════════════════════════════════════════════════════════════════════════════
 class _OverviewTab extends StatelessWidget {
   final MonthlySummary summary;
   final DateTime month;
   final NumberFormat fmt, fmtInt;
-  const _OverviewTab({required this.summary, required this.month,
-      required this.fmt, required this.fmtInt});
+  final double yearProfit;
+  final double overallProfit;
+
+  const _OverviewTab({
+    required this.summary,
+    required this.month,
+    required this.fmt,
+    required this.fmtInt,
+    required this.yearProfit,
+    required this.overallProfit,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -225,7 +255,7 @@ class _OverviewTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // ── KPI row ──────────────────────────────────────────────────────
+        // ── KPI row (first row: Monthly profit & Net) ──────────────────────
         Row(children: [
           Expanded(child: _kpi('Total profit', 'Rs ${fmtInt.format(s.totalProfit)}',
               s.totalProfit >= 30000 ? const Color(0xFF1A6B2A) : const Color(0xFF1F4E79),
@@ -237,6 +267,20 @@ class _OverviewTab extends StatelessWidget {
               netAfterExp >= 0 ? const Color(0xFFC6EFCE) : const Color(0xFFFFCCCC))),
         ]),
         const SizedBox(height: 10),
+
+        // ── Second row: Year Profit & Overall Profit (NEW) ──────────────────
+        Row(children: [
+          Expanded(child: _kpi('Year Profit (${month.year})',
+              'Rs ${fmtInt.format(yearProfit)}',
+              const Color(0xFF1F4E79), const Color(0xFFE6F1FB))),
+          const SizedBox(width: 10),
+          Expanded(child: _kpi('Total Profit (All Time)',
+              'Rs ${fmtInt.format(overallProfit)}',
+              const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
+        ]),
+        const SizedBox(height: 10),
+
+        // ── Third row: Revenue & kg sold ───────────────────────────────────
         Row(children: [
           Expanded(child: _kpi('Total revenue', 'Rs ${fmtInt.format(s.totalRevenue)}',
               const Color(0xFF7B4F06), const Color(0xFFFAEEDA))),
@@ -245,6 +289,8 @@ class _OverviewTab extends StatelessWidget {
               const Color(0xFF555555), const Color(0xFFF5F5F5))),
         ]),
         const SizedBox(height: 10),
+
+        // ── Fourth row: Sales days & Avg per day ───────────────────────────
         Row(children: [
           Expanded(child: _kpi('Sales days', '$daysWithSales days',
               const Color(0xFF555555), const Color(0xFFF5F5F5))),
@@ -357,7 +403,7 @@ class _OverviewTab extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// TAB 2 — SALES
+// TAB 2 — SALES (unchanged)
 // ══════════════════════════════════════════════════════════════════════════════
 class _SalesTab extends StatelessWidget {
   final MonthlySummary summary;
@@ -367,14 +413,12 @@ class _SalesTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = summary;
-    // Product map already in summary
     final entries = s.productMap.entries.toList()
         ..sort((a, b) => b.value.compareTo(a.value));
 
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Product breakdown
         Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(color: Colors.white,
@@ -414,7 +458,6 @@ class _SalesTab extends StatelessWidget {
         ),
         const SizedBox(height: 16),
 
-        // All sales list
         const Text('All sales', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         if (s.sales.isEmpty)
@@ -425,7 +468,6 @@ class _SalesTab extends StatelessWidget {
           Container(
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
             child: Column(children: [
-              // header
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                 decoration: const BoxDecoration(color: Color(0xFF1F4E79),
@@ -462,7 +504,6 @@ class _SalesTab extends StatelessWidget {
                   ]),
                 );
               }),
-              // total row
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
                 decoration: const BoxDecoration(color: Color(0xFFF0F7FF),
@@ -486,7 +527,7 @@ class _SalesTab extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// TAB 3 — BUYERS
+// TAB 3 — BUYERS (unchanged)
 // ══════════════════════════════════════════════════════════════════════════════
 class _BuyersTab extends StatelessWidget {
   final MonthlySummary summary;
@@ -502,7 +543,6 @@ class _BuyersTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Stats
         Row(children: [
           Expanded(child: _card('Buyers this month', '${buyers.length}',
               const Color(0xFF1F4E79), const Color(0xFFE6F1FB))),
@@ -599,7 +639,7 @@ class _BuyersTab extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// TAB 4 — WORKERS
+// TAB 4 — WORKERS (unchanged)
 // ══════════════════════════════════════════════════════════════════════════════
 class _WorkersTab extends StatelessWidget {
   final MonthlySummary summary;
@@ -609,7 +649,6 @@ class _WorkersTab extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = summary;
-    // Group attendance wages by worker
     final Map<String, _WorkerWageStat> attendMap = {};
     for (final a in s.attendance.where((a) => a.present)) {
       attendMap[a.workerName] ??= _WorkerWageStat(a.workerName, a.workerRole);
@@ -620,7 +659,6 @@ class _WorkersTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Summary cards
         Row(children: [
           Expanded(child: _card('Attendance wages',
               'Rs ${fmtInt.format(s.attendanceWages)}',
@@ -646,7 +684,6 @@ class _WorkersTab extends StatelessWidget {
         ),
         const SizedBox(height: 16),
 
-        // Auto wages — from sales kg
         if (s.autoWages.isNotEmpty) ...[
           const Text('Auto wages — from sales kg',
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
@@ -654,7 +691,6 @@ class _WorkersTab extends StatelessWidget {
           Container(
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
             child: Column(children: [
-              // header
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                 decoration: const BoxDecoration(color: Color(0xFF1F4E79),
@@ -686,7 +722,6 @@ class _WorkersTab extends StatelessWidget {
                   ]),
                 );
               }),
-              // total
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
                 decoration: const BoxDecoration(color: Color(0xFFF0F7FF),
@@ -705,7 +740,6 @@ class _WorkersTab extends StatelessWidget {
           const SizedBox(height: 16),
         ],
 
-        // Attendance wages
         if (attendMap.isNotEmpty) ...[
           const Text('Attendance wages — daily',
               style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
@@ -783,7 +817,7 @@ class _WorkerWageStat {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// TAB 5 — EXPENSES
+// TAB 5 — EXPENSES (unchanged)
 // ══════════════════════════════════════════════════════════════════════════════
 class _ExpensesTab extends StatelessWidget {
   final MonthlySummary summary;
@@ -798,7 +832,6 @@ class _ExpensesTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Total card
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(color: const Color(0xFFFFCCCC),
@@ -817,7 +850,6 @@ class _ExpensesTab extends StatelessWidget {
         ),
         const SizedBox(height: 16),
 
-        // By category
         if (byCategory.isNotEmpty) ...[
           const Text('By category', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
           const SizedBox(height: 8),
@@ -825,66 +857,65 @@ class _ExpensesTab extends StatelessWidget {
             padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12)),
             child: Column(
-  children: (byCategory.entries.toList()
-        ..sort((a, b) => b.value.compareTo(a.value)))
-      .map((e) => Padding(
-            padding: const EdgeInsets.only(bottom: 10),
-            child: Column(
-              children: [
-                Row(
-                  children: [
-                    _catIcon(e.key),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        e.key,
-                        style: const TextStyle(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
+              children: (byCategory.entries.toList()
+                    ..sort((a, b) => b.value.compareTo(a.value)))
+                  .map((e) => Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Column(
+                          children: [
+                            Row(
+                              children: [
+                                _catIcon(e.key),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: Text(
+                                    e.key,
+                                    style: const TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
+                                ),
+                                Text(
+                                  'Rs ${fmt.format(e.value)}',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFFBB3333),
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  '${(e.value / s.totalExpenses * 100).toStringAsFixed(0)}%',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Color(0xFF888888),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(3),
+                              child: LinearProgressIndicator(
+                                value: s.totalExpenses > 0
+                                    ? e.value / s.totalExpenses
+                                    : 0,
+                                minHeight: 4,
+                                backgroundColor: const Color(0xFFEEEEEE),
+                                valueColor: const AlwaysStoppedAnimation(
+                                  Color(0xFFBB3333),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
-                    ),
-                    Text(
-                      'Rs ${fmt.format(e.value)}',
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFFBB3333),
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${(e.value / s.totalExpenses * 100).toStringAsFixed(0)}%',
-                      style: const TextStyle(
-                        fontSize: 11,
-                        color: Color(0xFF888888),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(3),
-                  child: LinearProgressIndicator(
-                    value: s.totalExpenses > 0
-                        ? e.value / s.totalExpenses
-                        : 0,
-                    minHeight: 4,
-                    backgroundColor: const Color(0xFFEEEEEE),
-                    valueColor: const AlwaysStoppedAnimation(
-                      Color(0xFFBB3333),
-                    ),
-                  ),
-                ),
-              ],
+                      ))
+                  .toList(),
             ),
-          ))
-      .toList(),
-),
-),
+          ),
           const SizedBox(height: 16),
         ],
 
-        // All expenses
         const Text('All expenses', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         if (s.expenses.isEmpty)
@@ -947,7 +978,49 @@ class _ExpensesTab extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// YEAR VIEW
+// TAB 6 — MATERIALS (unchanged)
+// ══════════════════════════════════════════════════════════════════════════════
+class _MaterialsTab extends StatelessWidget {
+  final MonthlySummary summary;
+  final NumberFormat fmt, fmtInt;
+  const _MaterialsTab({required this.summary, required this.fmt, required this.fmtInt});
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Map<String, Map<String, double>>>(
+      future: FirebaseService.instance.monthlyMaterialSummary(
+        summary.sales.isNotEmpty ? summary.sales.first.date.year : DateTime.now().year,
+        summary.sales.isNotEmpty ? summary.sales.first.date.month : DateTime.now().month,
+      ),
+      builder: (ctx, snap) {
+        if (!snap.hasData) return const Center(child: CircularProgressIndicator());
+        final data = snap.data!;
+        final materials = RawMaterialType.values.map((e) => e.displayName).toList();
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            const Text('Raw Material Movement', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 12),
+            ...materials.map((mat) {
+              final purchase = data[mat]?['purchase'] ?? 0;
+              final sale = data[mat]?['sale'] ?? 0;
+              return Card(
+                child: ListTile(
+                  title: Text(mat),
+                  subtitle: Text('Purchased: ${purchase.toStringAsFixed(2)} kg  |  Sold: ${sale.toStringAsFixed(2)} kg'),
+                  trailing: Text('Stock Δ: ${(purchase - sale).toStringAsFixed(2)} kg'),
+                ),
+              );
+            }),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// YEAR VIEW (unchanged)
 // ══════════════════════════════════════════════════════════════════════════════
 class _YearView extends StatelessWidget {
   final int year;
@@ -976,7 +1049,6 @@ class _YearView extends StatelessWidget {
             style: const TextStyle(fontSize: 13, color: Color(0xFF888888))),
         const SizedBox(height: 16),
 
-        // Bar chart
         if (yearMap.isNotEmpty)
           Container(
             height: 200,
@@ -1036,7 +1108,6 @@ class _YearView extends StatelessWidget {
           ),
         const SizedBox(height: 16),
 
-        // Month grid — tap to open
         GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
@@ -1154,7 +1225,7 @@ class _DailyChart extends StatelessWidget {
   }
 }
 
-// ── Calendar heatmap ──────────────────────────────────────────────────────────
+// ── Calendar heatmap (unchanged) ──────────────────────────────────────────
 class _CalendarHeatmap extends StatelessWidget {
   final Map<String, double> dailyMap;
   final DateTime month;

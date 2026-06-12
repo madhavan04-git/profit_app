@@ -259,6 +259,7 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
                         ...items.map((item) => _WorkerStatementItemRow(
                           item: item,
                           fmt: _fmt,
+                          onEdit: () => _editStatementItem(worker, item),
                         )),
                       ],
                     ),
@@ -282,12 +283,25 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
       if (rate != null) {
         final earnedAmount = rate * sale.qty;
         if (earnedAmount > 0) {
+          // Check if product is sold by piece
+          final isPieceProduct = sale.soldByPiece == true;
+          
           items.add(WorkerStatementItem(
             id: 'sale_${sale.id}',
             date: sale.date,
             type: 'credit',
             amount: earnedAmount,
-            description: 'Earned: ${sale.productName} (${sale.qty} kg @ Rs ${_fmt.format(rate)}/kg)',
+            description: isPieceProduct
+                ? '${sale.productName} - ${sale.qty} pcs @ ₹${_fmt.format(rate)}/pc'
+                : '${sale.productName} - ${sale.qty} kg @ ₹${_fmt.format(rate)}/kg',
+            originalData: {
+              'saleId': sale.id, 
+              'qty': sale.qty, 
+              'rate': rate, 
+              'productName': sale.productName,
+              'soldByPiece': sale.soldByPiece ?? false,
+              'unit': sale.unit ?? 'kg',
+            },
           ));
         }
       }
@@ -302,6 +316,7 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
         type: 'debit',
         amount: payment.amount,
         description: payment.note.isNotEmpty ? payment.note : 'Payment Made',
+        originalData: {'paymentId': payment.id, 'note': payment.note},
       ));
     }
     
@@ -323,6 +338,264 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
     items.sort((a, b) => b.date.compareTo(a.date));
     
     return items;
+  }
+
+  Future<void> _editStatementItem(Worker worker, WorkerStatementItem item) async {
+    if (item.type == 'credit') {
+      // Direct amount edit for earnings
+      await _showEditAmountDialog(worker, item);
+    } else {
+      // Edit payment
+      await _showEditPaymentDialog(worker, item);
+    }
+    
+    // Refresh the statement
+    await _refreshStatement(worker.id!);
+    await _calculateWorkerEarnings();
+    setState(() {});
+  }
+
+  // NEW: Simple amount edit dialog - just enter the amount directly
+  Future<void> _showEditAmountDialog(Worker worker, WorkerStatementItem item) async {
+    final saleId = item.originalData?['saleId'];
+    final currentAmount = item.amount;
+    final qty = item.originalData?['qty'] ?? 0.0;
+    final rate = item.originalData?['rate'] ?? 0.0;
+    final isPieceProduct = item.originalData?['soldByPiece'] ?? false;
+    final unit = isPieceProduct ? 'pcs' : 'kg';
+    
+    final amountController = TextEditingController(text: currentAmount.toString());
+    
+    await showDialog(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          double newAmount = double.tryParse(amountController.text) ?? 0;
+          
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.edit, color: Color(0xFF1F4E79)),
+                const SizedBox(width: 8),
+                Text('Adjust Earnings - ${worker.name}'),
+              ],
+            ),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Product: ${item.originalData?['productName']}',
+                          style: const TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Worker: ${worker.role}',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                        const Divider(height: 16),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text('Quantity: ${qty.toStringAsFixed(2)} $unit'),
+                            Text('Rate: ₹${_fmt.format(rate)}/$unit'),
+                          ],
+                        ),
+                        Text(
+                          'Original Amount: ₹${_fmt.format(currentAmount)}',
+                          style: const TextStyle(fontSize: 12, color: Colors.grey),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Enter the final amount to give to worker:',
+                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: amountController,
+                    keyboardType: TextInputType.numberWithOptions(decimal: true),
+                    decoration: InputDecoration(
+                      labelText: 'Amount (₹)',
+                      hintText: 'Enter final amount',
+                      border: const OutlineInputBorder(),
+                      prefixIcon: const Icon(Icons.currency_rupee),
+                      suffixText: '₹',
+                    ),
+                    onChanged: (value) => setDialogState(() {}),
+                  ),
+                  const SizedBox(height: 16),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          'New Amount:',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '₹ ${_fmt.format(newAmount)}',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                            color: Colors.blue.shade800,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+              ),
+              ElevatedButton.icon(
+                onPressed: () async {
+                  final newAmount = double.tryParse(amountController.text);
+                  
+                  if (newAmount != null && newAmount > 0 && saleId != null) {
+                    // Calculate new rate based on new amount
+                    // newAmount = newRate * qty => newRate = newAmount / qty
+                    final newRate = newAmount / qty;
+                    
+                    // Update the sale in Firebase with new rate
+                    await _svc.updateSaleEarnings(saleId, worker.role, qty, newRate);
+                    
+                    if (mounted) {
+                      Navigator.pop(ctx);
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('Earnings adjusted from ₹${_fmt.format(currentAmount)} to ₹${_fmt.format(newAmount)}'),
+                          backgroundColor: Colors.green,
+                        ),
+                      );
+                    }
+                  } else {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Please enter a valid amount')),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.save),
+                label: const Text('Save Changes'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF1F4E79),
+                  foregroundColor: Colors.white,
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _showEditPaymentDialog(Worker worker, WorkerStatementItem item) async {
+    final paymentId = item.originalData?['paymentId'];
+    final currentAmount = item.amount;
+    final currentNote = item.originalData?['note'] ?? '';
+    
+    final amountController = TextEditingController(text: currentAmount.toString());
+    final noteController = TextEditingController(text: currentNote);
+    
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            const Icon(Icons.payment, color: Color(0xFF1F4E79)),
+            const SizedBox(width: 8),
+            Text('Edit Payment - ${worker.name}'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: amountController,
+              keyboardType: TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Amount (₹)',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.currency_rupee),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: noteController,
+              decoration: const InputDecoration(
+                labelText: 'Note',
+                border: OutlineInputBorder(),
+                prefixIcon: Icon(Icons.note),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          TextButton.icon(
+            onPressed: () async {
+              if (paymentId != null) {
+                await _svc.deleteWorkerSimpleTransaction(paymentId);
+                if (mounted) Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Payment deleted')),
+                );
+              }
+            },
+            icon: const Icon(Icons.delete, color: Colors.red),
+            label: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+          ElevatedButton.icon(
+            onPressed: () async {
+              final newAmount = double.tryParse(amountController.text);
+              final newNote = noteController.text;
+              
+              if (newAmount != null && newAmount > 0 && paymentId != null) {
+                await _svc.updateWorkerSimpleTransaction(
+                  paymentId,
+                  amount: newAmount,
+                  note: newNote,
+                );
+                if (mounted) Navigator.pop(ctx);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Payment updated successfully')),
+                );
+              }
+            },
+            icon: const Icon(Icons.update),
+            label: const Text('Update'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF1F4E79),
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _emptyStatement() => Center(
@@ -362,9 +635,10 @@ class WorkerStatementItem {
   final String id;
   final DateTime date;
   final String type;
-  final double amount;
+  double amount;
   final String description;
   double balance;
+  final Map<String, dynamic>? originalData;
 
   WorkerStatementItem({
     required this.id,
@@ -373,6 +647,7 @@ class WorkerStatementItem {
     required this.amount,
     required this.description,
     this.balance = 0,
+    this.originalData,
   });
 }
 
@@ -530,7 +805,6 @@ class _WorkerBalanceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDue = pending > 0;
-    final color = isDue ? const Color(0xFFCC4444) : const Color(0xFF1A6B2A);
 
     return Container(
       margin: const EdgeInsets.all(16),
@@ -602,10 +876,12 @@ class _WorkerBalanceCard extends StatelessWidget {
 class _WorkerStatementItemRow extends StatelessWidget {
   final WorkerStatementItem item;
   final NumberFormat fmt;
+  final VoidCallback onEdit;
 
   const _WorkerStatementItemRow({
     required this.item,
     required this.fmt,
+    required this.onEdit,
   });
 
   @override
@@ -613,73 +889,92 @@ class _WorkerStatementItemRow extends StatelessWidget {
     final isCredit = item.type == 'credit';
     final amountColor = isCredit ? const Color(0xFF1A6B2A) : const Color(0xFFCC4444);
     final amountPrefix = isCredit ? '+' : '-';
-    final title = isCredit ? 'Credit - Earned' : 'Debit - Payment';
+    final title = isCredit ? '💰 Earnings' : '💳 Payment';
 
-    return Container(
+    return Card(
       margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade100),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.02),
-            blurRadius: 2,
-            offset: const Offset(0, 1),
-          ),
-        ],
+        side: BorderSide(color: Colors.grey.shade200),
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF333333),
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  item.description,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: Color(0xFF888888),
-                  ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ],
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+      child: InkWell(
+        onTap: onEdit,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '$amountPrefix Rs ${fmt.format(item.amount)}',
-                style: TextStyle(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: amountColor,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF333333),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1F4E79).withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: const Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.edit, size: 12, color: Color(0xFF1F4E79)),
+                              SizedBox(width: 2),
+                              Text('Adjust', style: TextStyle(fontSize: 10, color: Color(0xFF1F4E79))),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      item.description,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF888888),
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                'Bal: Rs ${fmt.format(item.balance)}',
-                style: const TextStyle(
-                  fontSize: 10,
-                  color: Color(0xFF888888),
-                ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Text(
+                    '$amountPrefix ₹ ${fmt.format(item.amount)}',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.bold,
+                      color: amountColor,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Balance: ₹ ${fmt.format(item.balance)}',
+                    style: const TextStyle(
+                      fontSize: 10,
+                      color: Color(0xFF888888),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -778,8 +1073,8 @@ class _WorkerPaymentFormState extends State<_WorkerPaymentForm> {
           controller: _amountCtrl,
           keyboardType: const TextInputType.numberWithOptions(decimal: true),
           decoration: InputDecoration(
-            labelText: 'Amount (Rs) *',
-            prefixText: 'Rs ',
+            labelText: 'Amount (₹) *',
+            prefixText: '₹ ',
             filled: true,
             fillColor: const Color(0xFFF5F6FA),
             border: OutlineInputBorder(
