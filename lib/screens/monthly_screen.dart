@@ -1,5 +1,5 @@
 // lib/screens/monthly_screen.dart
-// Full monthly report with Yearly & Overall Profit
+// Full monthly report with Yearly & Overall Profit + Category breakdown
 
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
@@ -23,9 +23,8 @@ class _MonthlyScreenState extends State<MonthlyScreen>
   bool _loading = true;
   bool _pdfLoading = false;
   bool _yearView = false;
-  Map<int, double> _yearMap = {}; // month(1-12) → profit
+  Map<int, double> _yearMap = {};
 
-  // NEW: yearly & overall profit
   double _yearProfit = 0;
   double _overallProfit = 0;
   bool _loadingExtra = true;
@@ -33,7 +32,7 @@ class _MonthlyScreenState extends State<MonthlyScreen>
   @override
   void initState() {
     super.initState();
-    _tabs = TabController(length: 6, vsync: this); // 6 tabs now (added Materials)
+    _tabs = TabController(length: 6, vsync: this);
     _load();
   }
 
@@ -44,7 +43,6 @@ class _MonthlyScreenState extends State<MonthlyScreen>
     setState(() => _loading = true);
     try {
       final summary = await _svc.monthlySummary(_month.year, _month.month);
-      // Load year & overall profit in parallel
       final results = await Future.wait([
         _svc.yearlyTotalProfit(_month.year),
         _svc.overallTotalProfit(),
@@ -201,7 +199,7 @@ class _MonthlyScreenState extends State<MonthlyScreen>
   }
 }
 
-// ── Month selector (unchanged) ────────────────────────────────────────────
+// ── Month selector ───────────────────────────────────────────────────────────
 class _MonthSelector extends StatelessWidget {
   final DateTime month;
   final VoidCallback onPrev, onNext;
@@ -227,7 +225,7 @@ class _MonthSelector extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// TAB 1 — OVERVIEW (UPDATED with Year Profit & Overall Profit)
+// TAB 1 — OVERVIEW (UPDATED with Year Profit, Overall Profit & Category breakdown)
 // ══════════════════════════════════════════════════════════════════════════════
 class _OverviewTab extends StatelessWidget {
   final MonthlySummary summary;
@@ -255,7 +253,7 @@ class _OverviewTab extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // ── KPI row (first row: Monthly profit & Net) ──────────────────────
+        // ── KPI row 1 ──────────────────────────────────────────────────────
         Row(children: [
           Expanded(child: _kpi('Total profit', 'Rs ${fmtInt.format(s.totalProfit)}',
               s.totalProfit >= 30000 ? const Color(0xFF1A6B2A) : const Color(0xFF1F4E79),
@@ -268,7 +266,7 @@ class _OverviewTab extends StatelessWidget {
         ]),
         const SizedBox(height: 10),
 
-        // ── Second row: Year Profit & Overall Profit (NEW) ──────────────────
+        // ── KPI row 2 ──────────────────────────────────────────────────────
         Row(children: [
           Expanded(child: _kpi('Year Profit (${month.year})',
               'Rs ${fmtInt.format(yearProfit)}',
@@ -280,7 +278,7 @@ class _OverviewTab extends StatelessWidget {
         ]),
         const SizedBox(height: 10),
 
-        // ── Third row: Revenue & kg sold ───────────────────────────────────
+        // ── KPI row 3 ──────────────────────────────────────────────────────
         Row(children: [
           Expanded(child: _kpi('Total revenue', 'Rs ${fmtInt.format(s.totalRevenue)}',
               const Color(0xFF7B4F06), const Color(0xFFFAEEDA))),
@@ -290,7 +288,7 @@ class _OverviewTab extends StatelessWidget {
         ]),
         const SizedBox(height: 10),
 
-        // ── Fourth row: Sales days & Avg per day ───────────────────────────
+        // ── KPI row 4 ──────────────────────────────────────────────────────
         Row(children: [
           Expanded(child: _kpi('Sales days', '$daysWithSales days',
               const Color(0xFF555555), const Color(0xFFF5F5F5))),
@@ -342,6 +340,72 @@ class _OverviewTab extends StatelessWidget {
           ]),
         ),
         const SizedBox(height: 16),
+
+        // ── Category breakdown (NEW) ──────────────────────────────────────
+        if (s.profitByCategory.isNotEmpty) ...[
+          _sectionTitle('Profit & Volume by Category'),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: s.profitByCategory.keys.map((cat) {
+                final profit = s.profitByCategory[cat] ?? 0;
+                final kg = s.kgByCategory[cat] ?? 0;
+                final color = _categoryColor(cat);
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 12,
+                        height: 12,
+                        decoration: BoxDecoration(
+                          color: color,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          cat,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w500,
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            '₹ ${fmtInt.format(profit)}',
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: color,
+                              fontSize: 14,
+                            ),
+                          ),
+                          Text(
+                            '${kg.toStringAsFixed(1)} kg',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF888888),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+          const SizedBox(height: 16),
+        ],
 
         // ── Daily bar chart ───────────────────────────────────────────────
         if (s.dailyMap.isNotEmpty) ...[
@@ -400,6 +464,15 @@ class _OverviewTab extends StatelessWidget {
               style: TextStyle(fontSize: 13, fontWeight: bold ? FontWeight.bold : FontWeight.w500,
                   color: color)),
         ]));
+
+  Color _categoryColor(String cat) {
+    switch (cat) {
+      case 'SS': return const Color(0xFF1F4E79);
+      case 'Brass': return const Color(0xFF7B4F06);
+      case 'Copper': return const Color(0xFFB85C38);
+      default: return const Color(0xFF888888);
+    }
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -457,7 +530,6 @@ class _SalesTab extends StatelessWidget {
           ]),
         ),
         const SizedBox(height: 16),
-
         const Text('All sales', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
         const SizedBox(height: 8),
         if (s.sales.isEmpty)
@@ -487,7 +559,8 @@ class _SalesTab extends StatelessWidget {
                   color: i % 2 == 0 ? const Color(0xFFF8FAFB) : Colors.white,
                   child: Row(children: [
                     Expanded(flex: 1, child: Text(DateFormat('dd/MM').format(sale.date),
-                        style: const TextStyle(fontSize: 11, color: Color(0xFF888888)))),
+                        style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
+                    ),
                     Expanded(flex: 3, child: Text(sale.productName,
                         style: const TextStyle(fontSize: 11), overflow: TextOverflow.ellipsis)),
                     Expanded(flex: 1, child: Text(
@@ -552,7 +625,6 @@ class _BuyersTab extends StatelessWidget {
               const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
         ]),
         const SizedBox(height: 16),
-
         if (buyers.isEmpty)
           Container(
             padding: const EdgeInsets.all(32),
@@ -602,7 +674,6 @@ class _BuyersTab extends StatelessWidget {
             ),
           )),
         ],
-
         if (salesWithoutBuyer > 0) ...[
           const SizedBox(height: 8),
           Container(
@@ -1225,7 +1296,7 @@ class _DailyChart extends StatelessWidget {
   }
 }
 
-// ── Calendar heatmap (unchanged) ──────────────────────────────────────────
+// ── Calendar heatmap ──────────────────────────────────────────────────────────
 class _CalendarHeatmap extends StatelessWidget {
   final Map<String, double> dailyMap;
   final DateTime month;

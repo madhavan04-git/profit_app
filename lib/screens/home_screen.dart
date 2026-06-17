@@ -99,28 +99,51 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Future<void> _deleteSale(Sale sale) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        title: const Text('Delete sale?'),
-        content: Text(
-            'Delete ${sale.productName} — Rs ${sale.profit.toStringAsFixed(2)} profit?'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
-          TextButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete', style: TextStyle(color: Colors.red))),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await _svc.deleteSale(sale.id!);
-      _reloadSales();
-    }
+  // UPDATED: Delete sale with reversal of stock and credit
+ Future<void> _deleteSale(Sale sale) async {
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Delete sale?'),
+      content: Text('Delete ${sale.productName} — Rs ${sale.profit.toStringAsFixed(2)} profit?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+        TextButton(onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.red))),
+      ],
+    ),
+  );
+  if (ok != true) return;
+
+  // 1. Restore global stock (delete global consumption transaction)
+  if (sale.consumptionTxId != null) {
+    await _svc.deleteRawMaterialTransaction(sale.consumptionTxId!);
   }
+
+  // 2. Restore buyer stock (if any was deducted)
+  if (sale.buyerId != null &&
+      sale.buyerDeductionMaterialType != null &&
+      sale.buyerDeductionKg != null &&
+      sale.buyerDeductionKg! > 0) {
+    final material = RawMaterialType.fromString(sale.buyerDeductionMaterialType!);
+    await _svc.updatePartyStock(
+      sale.buyerId!,
+      sale.buyerName ?? 'Unknown',
+      'buyer',
+      material,
+      sale.buyerDeductionKg!, // positive to restore
+    );
+  }
+
+  // 3. Delete raw material credit (if any)
+  if (sale.rawMaterialCreditId != null) {
+    await _svc.deleteSimpleTransaction(sale.rawMaterialCreditId!);
+  }
+
+  // 4. Finally delete the sale itself
+  await _svc.deleteSale(sale.id!);
+  _reloadSales();
+}
 
   Future<void> _confirmLogout() async {
     final ok = await showDialog<bool>(
@@ -609,8 +632,7 @@ class _SaleCard extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ADD SALE SHEET - WITH PIECE PRODUCT SUPPORT & WORKER OVERRIDE
-// MODIFIED: For piece products, raw material stock (global & buyer) is NOT deducted.
+// ADD SALE SHEET - WITH PIECE PRODUCT SUPPORT, WORKER OVERRIDE, AND RAW MATERIAL CREDIT (RATE-BASED)
 // ══════════════════════════════════════════════════════════════════════════════
 class AddSaleSheet extends StatefulWidget {
   final DateTime date;
@@ -632,6 +654,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
   Buyer? _buyer;
   final _qty = TextEditingController();
   final _priceCtrl = TextEditingController();
+  final _rawRateCtrl = TextEditingController(); // rate per kg
   bool _customPrice = false;
   double _profit = 0, _effectivePrice = 0;
   bool _saving = false;
@@ -680,6 +703,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     }
   }
 
+  // UPDATED: fetch available stock = global + buyer's stock (if buyer selected)
   Future<void> _fetchGlobalStock(RawMaterialType? material) async {
     if (material == null) {
       setState(() {
@@ -689,11 +713,17 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       });
       return;
     }
-    final kg = await FirebaseService.instance.getCurrentStockForMaterial(material);
+    final globalKg = await FirebaseService.instance.getCurrentStockForMaterial(material);
+    double totalKg = globalKg;
+    // If buyer selected, add buyer's stock
+    if (_buyer != null && _buyer!.id != null) {
+      final buyerStock = await FirebaseService.instance.getBuyerStock(_buyer!.id!, material);
+      totalKg += buyerStock;
+    }
     setState(() {
-      _globalStockKg = kg;
+      _globalStockKg = totalKg;
       _globalMaterialType = material;
-      _globalStockText = 'Global ${material.displayName}: ${kg.toStringAsFixed(2)} kg';
+      _globalStockText = 'Available ${material.displayName}: ${totalKg.toStringAsFixed(2)} kg';
     });
   }
 
@@ -757,6 +787,9 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
   void _onBuyerChanged(Buyer? b) {
     setState(() => _buyer = b);
     _fetchBuyerStock(b);
+    // Refresh global stock to include buyer's stock
+    final material = _getMaterialTypeFromProduct(_product);
+    if (material != null) _fetchGlobalStock(material);
     _recalc();
   }
 
@@ -812,6 +845,19 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     return finalRates;
   }
 
+  // Helper to compute total credit to buyer (sale revenue + raw material value)
+  double _getTotalBuyerCredit() {
+    if (_product == null || _buyer == null) return 0;
+    final qty = double.tryParse(_qty.text) ?? 0;
+    final revenue = qty * _effectivePrice;
+    // Compute raw material amount from rate and quantity in kg
+    final qtyKg = _product!.soldByPiece ? qty * (_product!.productWeightG / 1000.0) : qty;
+    final rate = double.tryParse(_rawRateCtrl.text) ?? 0.0;
+    final rawMat = qtyKg * rate;
+    return revenue + rawMat;
+  }
+
+  // UPDATED: Save sale with stock deduction and credit linking
   Future<void> _save() async {
     if (_product == null || _qty.text.isEmpty) return;
     final qty = double.tryParse(_qty.text) ?? 0;
@@ -821,72 +867,81 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       return;
     }
 
-    // For piece products: DO NOT check or deduct raw material stock (global or buyer)
-    // Only kg-based products affect inventory.
     final isPieceProduct = _product!.soldByPiece;
 
+    // Determine total kg needed
+    final totalKgNeeded = _getKgConsumed(_product!, qty);
+
+    String? globalConsumptionTxId;
+    String? buyerDeductionMaterialType;
+    double? buyerDeductionKg;
+    RawMaterialType? globalMaterial;
+
+    // Only kg products affect inventory; piece products do not consume stock
     if (!isPieceProduct) {
-      // kg product – check and deduct stock
-      final kgConsumed = _getKgConsumed(_product!, qty);
+      globalMaterial = _getMaterialTypeFromProduct(_product);
+      if (globalMaterial == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Unknown material type for this product.')));
+        return;
+      }
 
-      // Check buyer stock (if buyer has stock for this material)
-      if (_buyer != null &&
-          _buyerMaterialType != null &&
-          _buyerStockText.isNotEmpty &&
-          !_buyerStockText.contains('No raw material')) {
-        final stock = await FirebaseService.instance.getPartyStock(_buyer!.id!);
-        final available = stock?.stock[_buyerMaterialType!] ?? 0;
-        if (available < kgConsumed) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(
-                  'Insufficient buyer raw material! Only ${available.toStringAsFixed(2)} kg available.'),
-              backgroundColor: Colors.red));
-          return;
+      double remainingKg = totalKgNeeded;
+
+      // Deduct from buyer's stock first if buyer is selected
+      if (_buyer != null && _buyer!.id != null) {
+        final buyerStock = await FirebaseService.instance.getBuyerStock(_buyer!.id!, globalMaterial);
+        if (buyerStock > 0) {
+          final deductFromBuyer = buyerStock >= remainingKg ? remainingKg : buyerStock;
+          if (deductFromBuyer > 0) {
+            // Deduct from buyer's stock
+            await FirebaseService.instance.updatePartyStock(
+              _buyer!.id!,
+              _buyer!.name,
+              'buyer',
+              globalMaterial,
+              -deductFromBuyer,
+            );
+            buyerDeductionKg = deductFromBuyer;
+            buyerDeductionMaterialType = globalMaterial.displayName;
+            remainingKg -= deductFromBuyer;
+          }
         }
       }
 
-      // Check global stock
-      final globalMaterial = _getMaterialTypeFromProduct(_product);
-      if (globalMaterial != null) {
-        final globalStock = await FirebaseService.instance.getCurrentStockForMaterial(globalMaterial);
-        if (globalStock < kgConsumed) {
+      // 2. Check total available (global + buyer's stock already deducted)
+      // but we need to check if remainingKg can be covered by global stock
+      final globalStock = await FirebaseService.instance.getCurrentStockForMaterial(globalMaterial);
+      if (remainingKg > 0) {
+        // Check global stock availability for the remainder
+        if (globalStock < remainingKg) {
+          // Compute total available (global + buyer's original stock, but buyer's stock already used)
+          // We show a combined error
+          final totalAvailable = globalStock + (buyerDeductionKg ?? 0);
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text(
-                  'Insufficient global stock! Only ${globalStock.toStringAsFixed(2)} kg available.'),
+              content: Text('Insufficient stock! Only ${totalAvailable.toStringAsFixed(2)} kg available.'),
               backgroundColor: Colors.red));
           return;
         }
-      }
 
-      // Deduct from buyer's raw material stock (if any)
-      if (_buyer != null && _buyer!.id != null && _buyerMaterialType != null) {
-        await FirebaseService.instance.updatePartyStock(
-          _buyer!.id!,
-          _buyer!.name,
-          'buyer',
-          _buyerMaterialType!,
-          -kgConsumed,
-        );
-      }
-
-      // Deduct from global stock by adding a consumption transaction
-      if (globalMaterial != null) {
+        // Create global consumption transaction (negative kg)
         final consumptionTx = RawMaterialTransaction(
           materialType: globalMaterial,
           date: widget.date,
-          quantityKg: -kgConsumed,
+          quantityKg: -remainingKg,
           ratePerKg: 0,
           transactionType: 'consumption',
-          supplierId: _buyer?.id,
-          supplierName: _buyer?.name,
-          note: 'Consumed for sale: ${_product!.name} (${qty} kg)',
+          supplierId: null, // null means global stock
+          supplierName: null,
+          isCredit: false,
+          creditAmount: 0,
+          note: 'Consumed for sale: ${_product!.name} (${remainingKg} kg)',
         );
-        await FirebaseService.instance.addRawMaterialTransaction(consumptionTx);
+        globalConsumptionTxId = await FirebaseService.instance.addRawMaterialTransaction(consumptionTx);
       }
     }
 
     setState(() => _saving = true);
-    final saleAmount = _product!.soldByPiece ? qty * _effectivePrice : qty * _effectivePrice;
     final finalWorkerRates = _getFinalWorkerRates();
 
     final sale = Sale(
@@ -902,10 +957,34 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       workerRatesPerKg: finalWorkerRates,
       soldByPiece: _product!.soldByPiece,
       unit: _product!.soldByPiece ? 'pcs' : 'kg',
+      // link tracking data
+      consumptionTxId: globalConsumptionTxId,
+      consumedMaterialType: globalMaterial?.displayName,
+      consumedKg: globalConsumptionTxId != null ? totalKgNeeded - (buyerDeductionKg ?? 0) : null,
+      buyerDeductionKg: buyerDeductionKg,
+      buyerDeductionMaterialType: buyerDeductionMaterialType,
+      rawMaterialCreditId: null,
     );
-    await FirebaseService.instance.addSale(sale);
 
-    // No auto-credit transaction – payments are manual only
+    final saleId = await FirebaseService.instance.addSale(sale);
+
+    // Credit buyer for raw material supplied (if any)
+    final qtyKg = _product!.soldByPiece ? qty * (_product!.productWeightG / 1000.0) : qty;
+    final rate = double.tryParse(_rawRateCtrl.text) ?? 0.0;
+    final rawMat = qtyKg * rate;
+    if (_buyer != null && rawMat > 0) {
+      final tx = SimpleTransaction(
+        buyerId: _buyer!.id!,
+        buyerName: _buyer!.name,
+        type: SimpleTxType.credit,
+        amount: rawMat,
+        note: 'Raw material supplied for sale: ${_product!.name} (${qtyKg.toStringAsFixed(2)} kg @ ₹${rate.toStringAsFixed(2)})',
+        dateTime: widget.date,
+      );
+      final creditTxId = await FirebaseService.instance.addSimpleTransaction(tx);
+      await FirebaseService.instance.updateSaleRawMaterialCredit(saleId, creditTxId);
+    }
+
     widget.onSaved();
     if (mounted) Navigator.pop(context);
   }
@@ -914,6 +993,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
   Widget build(BuildContext context) {
     final bottom = MediaQuery.of(context).viewInsets.bottom;
     final fmt = NumberFormat('#,##0.00', 'en_IN');
+    final totalCredit = _getTotalBuyerCredit();
 
     return Container(
       decoration: const BoxDecoration(
@@ -984,7 +1064,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
             onChanged: _onBuyerChanged,
           ),
 
-          // Display global stock (only for kg products)
+          // Display available stock (global + buyer's stock)
           if (_globalStockText.isNotEmpty && _product != null && !_product!.soldByPiece)
             Padding(
               padding: const EdgeInsets.only(top: 8, bottom: 8),
@@ -1195,12 +1275,30 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
             ),
             onChanged: (_) => _recalc(),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 10),
 
+          // ── Raw Material Rate Field ──────────────────────────────────
+          if (_buyer != null)
+            TextField(
+              controller: _rawRateCtrl,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: 'Raw material rate (₹/kg) – optional',
+                hintText: 'e.g. 150',
+                filled: true,
+                fillColor: const Color(0xFFF5F6FA),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                prefixIcon: const Icon(Icons.warehouse),
+              ),
+              onChanged: (_) => setState(() {}),
+            ),
+
+          // ── Profit display ──────────────────────────────────────────────
           if (_profit != 0)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 14),
+              margin: const EdgeInsets.only(top: 8),
               decoration: BoxDecoration(
                 color: _profit >= 0 ? const Color(0xFFC6EFCE) : const Color(0xFFFFCCCC),
                 borderRadius: BorderRadius.circular(12),
@@ -1217,6 +1315,28 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
                       style: const TextStyle(fontSize: 11, color: Color(0xFF555555))),
               ]),
             ),
+
+          // ── Total Buyer Credit Summary ──────────────────────────────────
+          if (_buyer != null && totalCredit > 0)
+            Container(
+              margin: const EdgeInsets.only(top: 8, bottom: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFE6F1FB),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Total Buyer Credit:',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text('₹ ${fmt.format(totalCredit)}',
+                      style: const TextStyle(fontWeight: FontWeight.bold,
+                          fontSize: 16, color: Color(0xFF1F4E79))),
+                ],
+              ),
+            ),
+
           const SizedBox(height: 14),
 
           SizedBox(

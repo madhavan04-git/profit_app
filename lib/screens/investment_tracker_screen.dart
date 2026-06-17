@@ -27,8 +27,9 @@ class _InvestmentTrackerScreenState extends State<InvestmentTrackerScreen>
     _loadStock();
   }
 
+  // UPDATED: use getTotalStock() to include party stocks
   Future<void> _loadStock() async {
-    final stock = await _svc.getCurrentStock();
+    final stock = await _svc.getTotalStock();
     setState(() {
       _stock = stock;
       _loadingStock = false;
@@ -62,6 +63,7 @@ class _InvestmentTrackerScreenState extends State<InvestmentTrackerScreen>
         icon: const Icon(Icons.add),
         label: const Text('Add Purchase/Sale'),
         backgroundColor: const Color(0xFF1F4E79),
+        foregroundColor: Colors.white,
       ),
     );
   }
@@ -76,7 +78,7 @@ class _InvestmentTrackerScreenState extends State<InvestmentTrackerScreen>
   }
 }
 
-// ------------------ Inventory Tab ------------------
+// ------------------ Inventory Tab (unchanged) ------------------
 class _InventoryTab extends StatelessWidget {
   final Map<RawMaterialType, double> stock;
   final bool loading;
@@ -115,7 +117,7 @@ class _InventoryTab extends StatelessWidget {
   }
 }
 
-// ------------------ Transactions Tab ------------------
+// ------------------ Transactions Tab (unchanged) ------------------
 class _TransactionsTab extends StatelessWidget {
   final NumberFormat fmt;
   final VoidCallback onRefresh;
@@ -165,7 +167,7 @@ class _TransactionsTab extends StatelessWidget {
   }
 }
 
-// ------------------ Parties Tab ------------------
+// ------------------ Parties Tab (unchanged) ------------------
 class _PartiesTab extends StatefulWidget {
   final NumberFormat fmt;
   final VoidCallback onRefresh;
@@ -248,7 +250,7 @@ class _PartiesTabState extends State<_PartiesTab> {
   }
 }
 
-// ------------------ Add Transaction Bottom Sheet (FIXED: no double update) ------------------
+// ------------------ Add Transaction Bottom Sheet (unchanged) ------------------
 class _AddMaterialTransactionSheet extends StatefulWidget {
   final VoidCallback onSaved;
   const _AddMaterialTransactionSheet({required this.onSaved});
@@ -315,9 +317,6 @@ class _AddMaterialTransactionSheetState extends State<_AddMaterialTransactionShe
     );
     // addRawMaterialTransaction already updates party stock internally
     await _svc.addRawMaterialTransaction(tx);
-
-    // ⚠️ REMOVED duplicate updatePartyStock call – it's already inside addRawMaterialTransaction
-    // This prevents double addition to party stock.
 
     widget.onSaved();
     if (mounted) Navigator.pop(context);

@@ -172,7 +172,7 @@ class Product {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// SALE (UPDATED with soldByPiece and unit)
+// SALE (UPDATED with tracking fields including buyer deduction)
 // ══════════════════════════════════════════════════════════════════════════════
 class Sale {
   final String? id;
@@ -189,6 +189,16 @@ class Sale {
   final bool soldByPiece;
   final String unit;
 
+  // Tracking fields
+  final String? rawMaterialCreditId;   // ID of the SimpleTransaction for buyer credit
+  final String? consumptionTxId;       // ID of the RawMaterialTransaction deducting global stock
+  final String? consumedMaterialType;  // e.g. 'SS Sheet'
+  final double? consumedKg;            // kg of raw material consumed from global stock
+
+  // NEW: buyer deduction tracking
+  final double? buyerDeductionKg;          // kg deducted from buyer's stock
+  final String? buyerDeductionMaterialType; // material type deducted from buyer
+
   const Sale({
     this.id,
     required this.productId,
@@ -203,6 +213,12 @@ class Sale {
     this.workerRatesPerKg = const {},
     this.soldByPiece = false,
     this.unit = 'kg',
+    this.rawMaterialCreditId,
+    this.consumptionTxId,
+    this.consumedMaterialType,
+    this.consumedKg,
+    this.buyerDeductionKg,
+    this.buyerDeductionMaterialType,
   });
 
   Map<String, dynamic> toMap() => {
@@ -219,6 +235,12 @@ class Sale {
     'workerRatesPerKg': workerRatesPerKg,
     'soldByPiece': soldByPiece,
     'unit': unit,
+    if (rawMaterialCreditId != null) 'rawMaterialCreditId': rawMaterialCreditId,
+    if (consumptionTxId != null) 'consumptionTxId': consumptionTxId,
+    if (consumedMaterialType != null) 'consumedMaterialType': consumedMaterialType,
+    if (consumedKg != null) 'consumedKg': consumedKg,
+    if (buyerDeductionKg != null) 'buyerDeductionKg': buyerDeductionKg,
+    if (buyerDeductionMaterialType != null) 'buyerDeductionMaterialType': buyerDeductionMaterialType,
   };
 
   factory Sale.fromMap(String id, Map<String, dynamic> m) {
@@ -238,6 +260,12 @@ class Sale {
       workerRatesPerKg: rates,
       soldByPiece: m['soldByPiece'] ?? false,
       unit: m['unit'] ?? 'kg',
+      rawMaterialCreditId: m['rawMaterialCreditId'] as String?,
+      consumptionTxId: m['consumptionTxId'] as String?,
+      consumedMaterialType: m['consumedMaterialType'] as String?,
+      consumedKg: (m['consumedKg'] as num?)?.toDouble(),
+      buyerDeductionKg: (m['buyerDeductionKg'] as num?)?.toDouble(),
+      buyerDeductionMaterialType: m['buyerDeductionMaterialType'] as String?,
     );
   }
 
@@ -246,6 +274,10 @@ class Sale {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// All other models (Buyer, BuyerTransaction, Worker, etc.) remain unchanged.
+// ══════════════════════════════════════════════════════════════════════════════
+// ... [the rest of your models.dart file] ...
+
 // BUYER
 // ══════════════════════════════════════════════════════════════════════════════
 class Buyer {
@@ -278,6 +310,8 @@ class Buyer {
     isActive: m['isActive'] ?? true,
   );
 }
+
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // BUYER TRANSACTION (legacy)

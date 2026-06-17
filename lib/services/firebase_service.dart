@@ -127,28 +127,16 @@ class FirebaseService {
   Future<void> deactivateProduct(String id) => _col('products').doc(id).update({'isActive': false});
 
   // ══════════════════════════════════════════════════════════════════════════
-  // SALES (addSale includes stock deduction)
+  // SALES
   // ══════════════════════════════════════════════════════════════════════════
 
   Future<String> addSale(Sale sale) async {
     final ref = await _col('sales').add(sale.toMap());
-    // Deduct raw material stock from buyer if the buyer exists and has stock
-    if (sale.buyerId != null && sale.buyerId!.isNotEmpty) {
-      final partyStock = await getPartyStock(sale.buyerId!);
-      if (partyStock != null && partyStock.stock.isNotEmpty) {
-        // For simplicity, deduct from the first available material
-        final material = partyStock.stock.keys.first;
-        final currentQty = partyStock.stock[material]!;
-        final newQty = currentQty - sale.qty;
-        if (newQty <= 0) {
-          partyStock.stock.remove(material);
-        } else {
-          partyStock.stock[material] = newQty;
-        }
-        await _col('partyStock').doc(sale.buyerId).set(partyStock.toMap());
-      }
-    }
     return ref.id;
+  }
+
+  Future<void> updateSaleRawMaterialCredit(String saleId, String creditId) {
+    return _col('sales').doc(saleId).update({'rawMaterialCreditId': creditId});
   }
 
   Future<void> deleteSale(String id) => _col('sales').doc(id).delete();
@@ -185,7 +173,7 @@ class FirebaseService {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // BUYERS (unchanged)
+  // BUYERS
   // ══════════════════════════════════════════════════════════════════════════
 
   Stream<List<Buyer>> buyersStream() => _col('buyers').where('isActive', isEqualTo: true).snapshots().map((s) {
@@ -209,7 +197,7 @@ class FirebaseService {
   Future<void> deleteBuyer(String id) => _col('buyers').doc(id).update({'isActive': false});
 
   // ══════════════════════════════════════════════════════════════════════════
-  // BUYER TRANSACTIONS (simple) — unchanged
+  // BUYER TRANSACTIONS (simple)
   // ══════════════════════════════════════════════════════════════════════════
 
   Future<List<SimpleTransaction>> getBuyerSimpleTransactions(String buyerId) async {
@@ -220,13 +208,17 @@ class FirebaseService {
   Stream<List<SimpleTransaction>> allBuyerSimpleTransactionsStream() =>
       _col('simpleTransactions').snapshots().map((s) => s.docs.map((d) => SimpleTransaction.fromMap(d.id, d.data())).toList());
 
-  Future<void> addSimpleTransaction(SimpleTransaction tx) async => await _col('simpleTransactions').add(tx.toMap());
+  Future<String> addSimpleTransaction(SimpleTransaction tx) async {
+    final ref = await _col('simpleTransactions').add(tx.toMap());
+    return ref.id;
+  }
+
   Future<void> deleteSimpleTransaction(String id) async => await _col('simpleTransactions').doc(id).delete();
   Future<void> updateSimpleTransaction(String id, {required double amount, required String note}) async =>
       await _col('simpleTransactions').doc(id).update({'amount': amount, 'note': note});
 
   // ══════════════════════════════════════════════════════════════════════════
-  // WORKERS (unchanged)
+  // WORKERS
   // ══════════════════════════════════════════════════════════════════════════
 
   Stream<List<Worker>> workersStream() => _col('workers').where('isActive', isEqualTo: true).snapshots().map((s) {
@@ -291,7 +283,7 @@ class FirebaseService {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // EXPENSES (unchanged)
+  // EXPENSES
   // ══════════════════════════════════════════════════════════════════════════
 
   Future<void> addExpense(Expense e) => _col('expenses').add(e.toMap());
@@ -316,48 +308,63 @@ class FirebaseService {
       _col('rawMaterialTransactions').orderBy('timestamp', descending: true).snapshots()
           .map((s) => s.docs.map((d) => RawMaterialTransaction.fromMap(d.id, d.data())).toList());
 
-Future<void> addRawMaterialTransaction(RawMaterialTransaction tx) async {
-  await _col('rawMaterialTransactions').add(tx.toMap());
-  // Update party stock if it's a purchase
-  if (tx.supplierId != null && tx.transactionType == 'purchase') {
-    await updatePartyStock(tx.supplierId!, tx.supplierName ?? '',
-        tx.supplierId!.startsWith('buyer_') ? 'buyer' : 'supplier',
-        tx.materialType, tx.quantityKg);
+  Future<String> addRawMaterialTransaction(RawMaterialTransaction tx) async {
+    final ref = await _col('rawMaterialTransactions').add(tx.toMap());
+    // If supplierId is not null, update party stock (buyer or supplier)
+    if (tx.supplierId != null && tx.transactionType == 'purchase') {
+      final partyType = tx.supplierId!.startsWith('buyer_') ? 'buyer' : 'supplier';
+      await updatePartyStock(
+        tx.supplierId!,
+        tx.supplierName ?? '',
+        partyType,
+        tx.materialType,
+        tx.quantityKg, // positive for purchase
+      );
+    }
+    return ref.id;
   }
-}
 
   Future<void> deleteRawMaterialTransaction(String id) async {
     await _col('rawMaterialTransactions').doc(id).delete();
   }
 
-  // Yearly total profit for a given year (sum of all 12 months)
-Future<double> yearlyTotalProfit(int year) async {
-  double total = 0;
-  for (int month = 1; month <= 12; month++) {
-    total += await monthlyTotalProfit(year, month);
+  Future<double> yearlyTotalProfit(int year) async {
+    double total = 0;
+    for (int month = 1; month <= 12; month++) {
+      total += await monthlyTotalProfit(year, month);
+    }
+    return total;
   }
-  return total;
-}
 
-// Overall profit from the very first sale
-Future<double> overallTotalProfit() async {
-  final allSales = await getAllSales();
-  double total = 0;
-  for (final sale in allSales) {
-    total += sale.profit;
+  Future<double> overallTotalProfit() async {
+    final allSales = await getAllSales();
+    double total = 0;
+    for (final sale in allSales) {
+      total += sale.profit;
+    }
+    return total;
   }
-  return total;
-}
 
+  // Get GLOBAL stock: sum transactions where supplierId == null
   Future<Map<RawMaterialType, double>> getCurrentStock() async {
     final q = await _col('rawMaterialTransactions').get();
     Map<RawMaterialType, double> stock = {};
     for (var doc in q.docs) {
       final tx = RawMaterialTransaction.fromMap(doc.id, doc.data());
-      final delta = tx.transactionType == 'purchase' ? tx.quantityKg : -tx.quantityKg;
-      stock[tx.materialType] = (stock[tx.materialType] ?? 0) + delta;
+      // Only count transactions that are not linked to a party (global)
+      if (tx.supplierId == null) {
+        final delta = tx.transactionType == 'purchase' ? tx.quantityKg : -tx.quantityKg;
+        stock[tx.materialType] = (stock[tx.materialType] ?? 0) + delta;
+      }
     }
     return stock;
+  }
+
+  // Get stock for a specific buyer (from partyStock)
+  Future<double> getBuyerStock(String buyerId, RawMaterialType material) async {
+    final party = await getPartyStock(buyerId);
+    if (party == null) return 0.0;
+    return party.stock[material] ?? 0.0;
   }
 
   // PARTY STOCK (for buyers/suppliers)
@@ -405,8 +412,6 @@ Future<double> overallTotalProfit() async {
     else await _col('suppliers').doc(s.id).set(s.toMap());
   }
 
-  
-
   // SUPPLIER CREDIT
   Stream<List<SupplierCredit>> supplierCreditStream() =>
       _col('supplierCredits').snapshots()
@@ -430,16 +435,38 @@ Future<double> overallTotalProfit() async {
     }
   }
 
-Future<List<PartyStock>> getAllPartyStock() async {
-  final q = await _col('partyStock').get();
-  return q.docs.map((doc) => PartyStock.fromMap(doc.id, doc.data())).toList();
+  Future<List<PartyStock>> getAllPartyStock() async {
+    final q = await _col('partyStock').get();
+    return q.docs.map((doc) => PartyStock.fromMap(doc.id, doc.data())).toList();
+  }
+
+  Future<double> getCurrentStockForMaterial(RawMaterialType material) async {
+    final stock = await getCurrentStock();
+    return stock[material] ?? 0.0;
+  }
+
+  // Inside FirebaseService class
+
+// Get total stock = global stock + all party stocks
+Future<Map<RawMaterialType, double>> getTotalStock() async {
+  // 1. Get global stock
+  final global = await getCurrentStock();
+
+  // 2. Get all party stocks
+  final partyDocs = await _col('partyStock').get();
+  final Map<RawMaterialType, double> total = Map.from(global);
+
+  for (var doc in partyDocs.docs) {
+    final party = PartyStock.fromMap(doc.id, doc.data());
+    for (var entry in party.stock.entries) {
+      total[entry.key] = (total[entry.key] ?? 0) + entry.value;
+    }
+  }
+  return total;
 }
 
-Future<double> getCurrentStockForMaterial(RawMaterialType material) async {
-  final stock = await getCurrentStock();
-  return stock[material] ?? 0.0;
-}
-
+// Update getCurrentStockForMaterial to use total if needed, but we'll keep it as global-only
+// Keep the existing getCurrentStockForMaterial() as-is (for sales checks)
 
   // MONTHLY MATERIAL SUMMARY
   Future<Map<String, Map<String, double>>> monthlyMaterialSummary(int year, int month) async {
@@ -464,7 +491,7 @@ Future<double> getCurrentStockForMaterial(RawMaterialType material) async {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // MONTHLY SUMMARY (unchanged)
+  // MONTHLY SUMMARY
   // ══════════════════════════════════════════════════════════════════════════
 
   Future<MonthlySummary> monthlySummary(int year, int month) async {
@@ -513,6 +540,10 @@ Future<double> getCurrentStockForMaterial(RawMaterialType material) async {
     final Map<String, BuyerMonthSummary> buyerMapI = {};
     final Map<String, double> expenseCatMap = {};
 
+    // Category breakdown
+    final Map<String, double> profitByCategory = {};
+    final Map<String, double> kgByCategory = {};
+
     for (final s in sales) {
       final dk = s.date.toIso8601String().substring(0,10);
       dailyMap[dk] = (dailyMap[dk] ?? 0) + s.profit;
@@ -522,6 +553,11 @@ Future<double> getCurrentStockForMaterial(RawMaterialType material) async {
         buyerMapI[s.buyerId!] ??= BuyerMonthSummary(buyerId: s.buyerId!, buyerName: s.buyerName ?? 'Unknown');
         buyerMapI[s.buyerId!]!.add(s);
       }
+
+      // Category totals
+      final cat = s.productCategory;
+      profitByCategory[cat] = (profitByCategory[cat] ?? 0) + s.profit;
+      kgByCategory[cat] = (kgByCategory[cat] ?? 0) + s.qty;
     }
     for (final e in expenses) {
       expenseCatMap[e.category] = (expenseCatMap[e.category] ?? 0) + e.amount;
@@ -544,6 +580,8 @@ Future<double> getCurrentStockForMaterial(RawMaterialType material) async {
       buyerList: buyerMapI.values.toList()..sort((a, b) => b.totalProfit.compareTo(a.totalProfit)),
       expenseCatMap: expenseCatMap,
       workerWageByRole: autoWageByRole,
+      profitByCategory: profitByCategory,
+      kgByCategory: kgByCategory,
     );
   }
 
@@ -580,11 +618,7 @@ Future<double> getCurrentStockForMaterial(RawMaterialType material) async {
   }
 }
 
-// Add anywhere inside the FirebaseService class, for example after getCurrentStock():
-
-
-
-// Supporting data classes
+// Supporting data classes (unchanged)
 class BuyerMonthSummary {
   final String buyerId, buyerName;
   int salesCount = 0;
@@ -614,6 +648,9 @@ class MonthlySummary {
   final Map<String, double> dailyMap, productMap, expenseCatMap;
   final Map<String, double> workerWageByRole;
   final List<BuyerMonthSummary> buyerList;
+  final Map<String, double> profitByCategory;
+  final Map<String, double> kgByCategory;
+
   const MonthlySummary({
     required this.sales,
     required this.expenses,
@@ -631,7 +668,7 @@ class MonthlySummary {
     required this.buyerList,
     required this.expenseCatMap,
     required this.workerWageByRole,
+    required this.profitByCategory,
+    required this.kgByCategory,
   });
 }
-
-
