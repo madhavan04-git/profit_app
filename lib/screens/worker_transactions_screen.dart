@@ -14,12 +14,21 @@ class WorkerTransactionsScreen extends StatefulWidget {
   State<WorkerTransactionsScreen> createState() => _WorkerTransactionsScreenState();
 }
 
-class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
+class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen>
+    with SingleTickerProviderStateMixin {
   final _svc = FirebaseService.instance;
   final _fmt = NumberFormat('#,##0.00', 'en_IN');
   Worker? _selectedWorker;
-  Map<String, double> _workerEarnings = {};
+  Map<String, double> _workerEarnings = {};       // current month (existing behaviour)
+  Map<String, double> _workerEarningsAllTime = {}; // all-time, used for Overview totals
   Map<String, List<WorkerStatementItem>> _statementCache = {};
+
+  // Raw sales cached once, re-sliced locally whenever the list-screen date
+  // range changes — avoids re-fetching from Firestore on every date pick.
+  List<Sale> _allSalesRaw = [];
+
+  // Tabs shown on the "all workers" list screen: Overview | Workers | Filter
+  late TabController _listTabs;
 
   // ── Filter state (statement view) ────────────────────────────────────────
   bool      _showFilter  = false;
@@ -29,16 +38,27 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
   DateTime? _filterTo;
   final _searchCtrl = TextEditingController();
 
+  // ── Filter state (all-workers Filter tab) ────────────────────────────────
+  String    _listSearchQuery = '';
+  String    _listStatusFilter = 'all'; // 'all' | 'due' | 'settled'
+  final _listSearchCtrl = TextEditingController();
+  DateTime? _listFilterFrom;
+  DateTime? _listFilterTo;
+
   @override
   void initState() {
     super.initState();
+    _listTabs = TabController(length: 3, vsync: this);
     _selectedWorker = widget.worker;
     _calculateWorkerEarnings();
+    _calculateAllTimeEarnings();
   }
 
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _listSearchCtrl.dispose();
+    _listTabs.dispose();
     super.dispose();
   }
 
@@ -85,6 +105,80 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
     });
   }
 
+  /// All-time earnings per worker (sum over every sale ever recorded),
+  /// mirroring how the buyer screen sums getAllSales() for total dues.
+  /// Kept separate from _workerEarnings (current month) since other parts
+  /// of this screen rely on the month-scoped figure and shouldn't change.
+  Future<void> _calculateAllTimeEarnings() async {
+    final allSales = await _svc.getAllSales();
+    final workers = await _svc.getWorkers();
+    _allSalesRaw = allSales;
+
+    final Map<String, double> earnings = {};
+    for (final worker in workers) {
+      double totalEarned = 0;
+      for (final sale in allSales) {
+        final rate = sale.workerRatesPerKg[worker.role];
+        if (rate != null) {
+          totalEarned += rate * sale.qty;
+        }
+      }
+      earnings[worker.id!] = totalEarned;
+    }
+    if (mounted) setState(() => _workerEarningsAllTime = earnings);
+  }
+
+  /// Computes per-worker {credit, debit, pending} restricted to [from, to]
+  /// inclusive (or all-time when both are null) — drives the Overview cards,
+  /// Workers list, and Filter tab together so a date range picked in Filter
+  /// updates every tab consistently. Earnings come from sale dates; payments
+  /// (debit) come from the live worker-transaction stream filtered by
+  /// dateTime.
+  Map<String, Map<String, double>> _computeWorkerBalances({
+    required List<Worker> workers,
+    required List<WorkerSimpleTransaction> liveTx,
+    DateTime? from,
+    DateTime? to,
+  }) {
+    final toExclusive = to?.add(const Duration(days: 1));
+
+    bool inRange(DateTime d) {
+      if (from != null && d.isBefore(from)) return false;
+      if (toExclusive != null && !d.isBefore(toExclusive)) return false;
+      return true;
+    }
+
+    final sales = (from == null && to == null)
+        ? _allSalesRaw
+        : _allSalesRaw.where((s) => inRange(s.date)).toList();
+    final txs = (from == null && to == null)
+        ? liveTx
+        : liveTx.where((t) => inRange(t.dateTime)).toList();
+
+    final Map<String, Map<String, double>> balances = {};
+    for (final worker in workers) {
+      double totalEarned = 0;
+      for (final sale in sales) {
+        final rate = sale.workerRatesPerKg[worker.role];
+        if (rate != null) totalEarned += rate * sale.qty;
+      }
+
+      double totalDebit = 0;
+      for (final tx in txs) {
+        if (tx.workerId == worker.id && tx.type == WorkerSimpleTxType.debit) {
+          totalDebit += tx.amount;
+        }
+      }
+
+      balances[worker.id!] = {
+        'credit': totalEarned,
+        'debit': totalDebit,
+        'pending': totalEarned - totalDebit,
+      };
+    }
+    return balances;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -92,6 +186,16 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
         title: _selectedWorker == null 
             ? const Text('Worker Accounts')
             : Text('Statement - ${_selectedWorker!.name}'),
+        bottom: _selectedWorker == null
+            ? TabBar(
+                controller: _listTabs,
+                tabs: const [
+                  Tab(text: 'Overview'),
+                  Tab(text: 'Workers'),
+                  Tab(text: 'Filter', icon: Icon(Icons.filter_alt_outlined, size: 16)),
+                ],
+              )
+            : null,
         actions: [
           if (_selectedWorker != null) ...[
             IconButton(
@@ -117,11 +221,19 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
                 setState(() => _selectedWorker = null);
               },
             ),
-          ],
+          ] else
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh',
+              onPressed: () async {
+                await _calculateWorkerEarnings();
+                await _calculateAllTimeEarnings();
+              },
+            ),
         ],
       ),
       body: _selectedWorker == null
-          ? _buildAllWorkersView()
+          ? _buildAllWorkersTabs()
           : _buildWorkerStatementView(_selectedWorker!),
       floatingActionButton: _selectedWorker != null
           ? FloatingActionButton.extended(
@@ -135,7 +247,8 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
     );
   }
 
-  Widget _buildAllWorkersView() {
+
+  Widget _buildAllWorkersTabs() {
     return StreamBuilder<List<Worker>>(
       stream: _svc.workersStream(),
       builder: (ctx, workersSnap) {
@@ -144,7 +257,7 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
         }
 
         final workers = workersSnap.data ?? [];
-        
+
         if (workers.isEmpty) {
           return Center(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -164,55 +277,424 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
           stream: _svc.allWorkerSimpleTransactionsStream(),
           builder: (ctx, txsSnap) {
             final allTransactions = txsSnap.data ?? [];
-            
-            final Map<String, Map<String, double>> workerBalances = {};
-            
-            for (final worker in workers) {
-              final workerTxs = allTransactions.where((tx) => tx.workerId == worker.id).toList();
-              
-              double totalDebit = 0;
-              
-              for (final tx in workerTxs) {
-                if (tx.type == WorkerSimpleTxType.debit) {
-                  totalDebit += tx.amount;
+            final hasRange = _listFilterFrom != null || _listFilterTo != null;
+
+            Map<String, Map<String, double>> workerBalances;
+            Map<String, Map<String, double>> workerBalancesAllTime;
+
+            if (hasRange) {
+              // A date range is active — every tab (Overview, Workers list,
+              // Filter) reflects totals for that range only.
+              final rangeBalances = _computeWorkerBalances(
+                workers: workers,
+                liveTx: allTransactions,
+                from: _listFilterFrom,
+                to: _listFilterTo,
+              );
+              workerBalances = rangeBalances;
+              workerBalancesAllTime = rangeBalances;
+            } else {
+              // No range selected — keep existing behaviour: the list/status
+              // pending uses the current-month figure, Overview uses all-time.
+              workerBalances = {};
+              workerBalancesAllTime = {};
+
+              for (final worker in workers) {
+                final workerTxs = allTransactions.where((tx) => tx.workerId == worker.id).toList();
+
+                double totalDebit = 0;
+                for (final tx in workerTxs) {
+                  if (tx.type == WorkerSimpleTxType.debit) {
+                    totalDebit += tx.amount;
+                  }
                 }
+
+                final totalCredit = _workerEarnings[worker.id!] ?? 0;
+                workerBalances[worker.id!] = {
+                  'credit': totalCredit,
+                  'debit': totalDebit,
+                  'pending': totalCredit - totalDebit,
+                };
+
+                final totalCreditAllTime = _workerEarningsAllTime[worker.id!] ?? 0;
+                workerBalancesAllTime[worker.id!] = {
+                  'credit': totalCreditAllTime,
+                  'debit': totalDebit,
+                  'pending': totalCreditAllTime - totalDebit,
+                };
               }
-              
-              final totalCredit = _workerEarnings[worker.id!] ?? 0;
-              final pending = totalCredit - totalDebit;
-              
-              workerBalances[worker.id!] = {
-                'credit': totalCredit,
-                'debit': totalDebit,
-                'pending': pending,
-              };
             }
-            
+
+            // ── Aggregate totals across ALL workers for the Overview cards ──
+            double grandEarned = 0;
+            double grandPaid = 0;
+            double grandBalance = 0;
+            for (final b in workerBalancesAllTime.values) {
+              grandEarned  += b['credit']!;
+              grandPaid    += b['debit']!;
+              grandBalance += b['pending']!;
+            }
+
             final sortedWorkers = List<Worker>.from(workers);
-            sortedWorkers.sort((a, b) => 
+            sortedWorkers.sort((a, b) =>
                 (workerBalances[b.id!]?['pending'] ?? 0).compareTo(workerBalances[a.id!]?['pending'] ?? 0));
-            
-            return RefreshIndicator(
-              onRefresh: _calculateWorkerEarnings,
-              child: ListView.builder(
-                padding: const EdgeInsets.all(16),
-                itemCount: sortedWorkers.length,
-                itemBuilder: (_, i) => _WorkerAccountCard(
-                  worker: sortedWorkers[i],
-                  totalCredit: workerBalances[sortedWorkers[i].id!]!['credit']!,
-                  totalDebit: workerBalances[sortedWorkers[i].id!]!['debit']!,
-                  pending: workerBalances[sortedWorkers[i].id!]!['pending']!,
-                  fmt: _fmt,
-                  onTap: () => setState(() => _selectedWorker = sortedWorkers[i]),
-                  onAddPayment: () => _openPaymentForm(sortedWorkers[i]),
-                ),
-              ),
+
+            return TabBarView(
+              controller: _listTabs,
+              children: [
+                _buildWorkerOverviewTab(
+                    grandEarned, grandPaid, grandBalance, sortedWorkers, workerBalancesAllTime),
+                _buildWorkerListTab(sortedWorkers, workerBalances),
+                _buildWorkerFilterTab(sortedWorkers, workerBalances),
+              ],
             );
           },
         );
       },
     );
   }
+
+  Future<void> _onRefreshAllWorkers() async {
+    await _calculateWorkerEarnings();
+    await _calculateAllTimeEarnings();
+  }
+
+  // ── TAB 1: Overview ──────────────────────────────────────────────────────
+  Widget _buildWorkerOverviewTab(
+    double grandEarned,
+    double grandPaid,
+    double grandBalance,
+    List<Worker> sortedWorkers,
+    Map<String, Map<String, double>> workerBalancesAllTime,
+  ) {
+    final hasRange = _listFilterFrom != null || _listFilterTo != null;
+    return RefreshIndicator(
+      onRefresh: _onRefreshAllWorkers,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (hasRange)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF8E1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(children: [
+                const Icon(Icons.date_range, size: 16, color: Color(0xFF7B4F06)),
+                const SizedBox(width: 8),
+                Expanded(child: Text(_rangeLabel(),
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                        color: Color(0xFF7B4F06)))),
+                GestureDetector(
+                  onTap: () => setState(() {
+                    _listFilterFrom = null;
+                    _listFilterTo = null;
+                  }),
+                  child: const Icon(Icons.close, size: 16, color: Color(0xFF7B4F06)),
+                ),
+              ]),
+            ),
+          Row(children: [
+            Expanded(child: _summaryCard(
+                'Total Earned', grandEarned, const Color(0xFF1F4E79), const Color(0xFFE6F1FB))),
+            const SizedBox(width: 10),
+            Expanded(child: _summaryCard(
+                'Total Paid', grandPaid, const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
+          ]),
+          const SizedBox(height: 10),
+          _summaryCard(
+              hasRange ? 'Total Balance (Selected Range)' : 'Total Balance (All Workers)',
+              grandBalance,
+              grandBalance > 0 ? const Color(0xFFCC4444) : const Color(0xFF1A6B2A),
+              grandBalance > 0 ? const Color(0xFFFFE5E5) : const Color(0xFFC6EFCE),
+              fullWidth: true),
+          const SizedBox(height: 20),
+
+          const Text('Top Workers by Pending Balance',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF333333))),
+          const SizedBox(height: 10),
+
+          ...sortedWorkers.take(5).map((worker) {
+            final bal = workerBalancesAllTime[worker.id!]!;
+            final pending = bal['pending']!;
+            final isDue = pending > 0;
+            final color = isDue ? const Color(0xFFCC4444) : const Color(0xFF1A6B2A);
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              elevation: 1,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              child: ListTile(
+                onTap: () => setState(() => _selectedWorker = worker),
+                title: Text(worker.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: Text(worker.role),
+                trailing: Text('Rs ${_fmt.format(pending.abs())}',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: color)),
+              ),
+            );
+          }),
+
+          if (sortedWorkers.length > 5) ...[
+            const SizedBox(height: 6),
+            Center(
+              child: TextButton.icon(
+                onPressed: () => _listTabs.animateTo(1),
+                icon: const Icon(Icons.list, size: 18),
+                label: Text('View all ${sortedWorkers.length} workers'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _rangeLabel() {
+    final df = DateFormat('dd MMM yyyy');
+    if (_listFilterFrom != null && _listFilterTo != null) {
+      return 'Showing: ${df.format(_listFilterFrom!)} – ${df.format(_listFilterTo!)}';
+    } else if (_listFilterFrom != null) {
+      return 'Showing: from ${df.format(_listFilterFrom!)}';
+    } else if (_listFilterTo != null) {
+      return 'Showing: up to ${df.format(_listFilterTo!)}';
+    }
+    return '';
+  }
+
+  Widget _summaryCard(String label, double value, Color color, Color bg, {bool fullWidth = false}) {
+    final isNegative = value < 0;
+    return Container(
+      width: fullWidth ? double.infinity : null,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(fontSize: 11, color: color.withOpacity(0.75), fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Text('Rs ${_fmt.format(value.abs())}${isNegative ? ' Cr' : ''}',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+        ],
+      ),
+    );
+  }
+
+  // ── TAB 2: Workers list (original behaviour) ────────────────────────────
+  Widget _buildWorkerListTab(
+    List<Worker> sortedWorkers,
+    Map<String, Map<String, double>> workerBalances,
+  ) {
+    return RefreshIndicator(
+      onRefresh: _onRefreshAllWorkers,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: sortedWorkers.length,
+        itemBuilder: (_, i) => _WorkerAccountCard(
+          worker: sortedWorkers[i],
+          totalCredit: workerBalances[sortedWorkers[i].id!]!['credit']!,
+          totalDebit: workerBalances[sortedWorkers[i].id!]!['debit']!,
+          pending: workerBalances[sortedWorkers[i].id!]!['pending']!,
+          fmt: _fmt,
+          onTap: () => setState(() => _selectedWorker = sortedWorkers[i]),
+          onAddPayment: () => _openPaymentForm(sortedWorkers[i]),
+        ),
+      ),
+    );
+  }
+
+  // ── TAB 3: Filter (search + status filter across all workers) ───────────
+  Widget _buildWorkerFilterTab(
+    List<Worker> sortedWorkers,
+    Map<String, Map<String, double>> workerBalances,
+  ) {
+    var filtered = sortedWorkers.where((worker) {
+      final bal = workerBalances[worker.id!]!;
+      final pending = bal['pending']!;
+
+      if (_listStatusFilter == 'due' && pending <= 0) return false;
+      if (_listStatusFilter == 'settled' && pending > 0) return false;
+
+      if (_listSearchQuery.isNotEmpty) {
+        final q = _listSearchQuery.toLowerCase();
+        if (!worker.name.toLowerCase().contains(q) &&
+            !worker.role.toLowerCase().contains(q)) return false;
+      }
+      return true;
+    }).toList();
+
+    return Column(
+      children: [
+        Container(
+          color: const Color(0xFFF5F8FF),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            TextField(
+              controller: _listSearchCtrl,
+              onChanged: (v) => setState(() => _listSearchQuery = v),
+              decoration: InputDecoration(
+                hintText: 'Search worker name or role…',
+                prefixIcon: const Icon(Icons.search, size: 18),
+                suffixIcon: _listSearchQuery.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 16),
+                        onPressed: () {
+                          _listSearchCtrl.clear();
+                          setState(() => _listSearchQuery = '');
+                        })
+                    : null,
+                filled: true,
+                fillColor: Colors.white,
+                isDense: true,
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text('Date range (applies to totals everywhere)',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF555555))),
+            const SizedBox(height: 6),
+            Row(children: [
+              Expanded(child: _listDatePicker(
+                label: _listFilterFrom == null
+                    ? 'Start date'
+                    : DateFormat('dd MMM yy').format(_listFilterFrom!),
+                color: const Color(0xFF1F4E79),
+                onTap: () async {
+                  final d = await showDatePicker(
+                    context: context,
+                    initialDate: _listFilterFrom ?? DateTime.now(),
+                    firstDate: DateTime(2020),
+                    lastDate: _listFilterTo ?? DateTime.now(),
+                  );
+                  if (d != null) setState(() => _listFilterFrom = d);
+                },
+                onClear: _listFilterFrom != null
+                    ? () => setState(() => _listFilterFrom = null) : null,
+              )),
+              const SizedBox(width: 8),
+              Expanded(child: _listDatePicker(
+                label: _listFilterTo == null
+                    ? 'End date'
+                    : DateFormat('dd MMM yy').format(_listFilterTo!),
+                color: const Color(0xFF1F4E79),
+                onTap: () async {
+                  final d = await showDatePicker(
+                    context: context,
+                    initialDate: _listFilterTo ?? DateTime.now(),
+                    firstDate: _listFilterFrom ?? DateTime(2020),
+                    lastDate: DateTime.now(),
+                  );
+                  if (d != null) setState(() => _listFilterTo = d);
+                },
+                onClear: _listFilterTo != null
+                    ? () => setState(() => _listFilterTo = null) : null,
+              )),
+            ]),
+            const SizedBox(height: 12),
+            const Text('Status',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF555555))),
+            const SizedBox(height: 6),
+            Row(children: [
+              _statusChip('All', 'all', const Color(0xFF555555)),
+              const SizedBox(width: 8),
+              _statusChip('Due', 'due', const Color(0xFFCC4444)),
+              const SizedBox(width: 8),
+              _statusChip('Settled', 'settled', const Color(0xFF1A6B2A)),
+            ]),
+            if (_listStatusFilter != 'all' || _listSearchQuery.isNotEmpty ||
+                _listFilterFrom != null || _listFilterTo != null) ...[
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () => setState(() {
+                    _listStatusFilter = 'all';
+                    _listSearchQuery = '';
+                    _listSearchCtrl.clear();
+                    _listFilterFrom = null;
+                    _listFilterTo = null;
+                  }),
+                  icon: const Icon(Icons.filter_list_off, size: 16),
+                  label: const Text('Clear all filters', style: TextStyle(fontSize: 12)),
+                  style: TextButton.styleFrom(foregroundColor: const Color(0xFFCC4444)),
+                ),
+              ),
+            ],
+          ]),
+        ),
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.search_off, size: 56, color: Colors.grey.shade300),
+                    const SizedBox(height: 10),
+                    Text('No workers match this filter',
+                        style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w600)),
+                  ]),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: filtered.length,
+                  itemBuilder: (_, i) => _WorkerAccountCard(
+                    worker: filtered[i],
+                    totalCredit: workerBalances[filtered[i].id!]!['credit']!,
+                    totalDebit: workerBalances[filtered[i].id!]!['debit']!,
+                    pending: workerBalances[filtered[i].id!]!['pending']!,
+                    fmt: _fmt,
+                    onTap: () => setState(() => _selectedWorker = filtered[i]),
+                    onAddPayment: () => _openPaymentForm(filtered[i]),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _statusChip(String label, String value, Color color) => GestureDetector(
+    onTap: () => setState(() => _listStatusFilter = value),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: _listStatusFilter == value ? color : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Text(label,
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+              color: _listStatusFilter == value ? Colors.white : color)),
+    ),
+  );
+
+  Widget _listDatePicker({
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+    VoidCallback? onClear,
+  }) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: Row(children: [
+            Icon(Icons.calendar_today, size: 14, color: color),
+            const SizedBox(width: 6),
+            Expanded(child: Text(label,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
+            if (onClear != null)
+              GestureDetector(
+                onTap: onClear,
+                child: Icon(Icons.close, size: 14, color: Colors.grey.shade400)),
+          ]),
+        ),
+      );
+
 
   // ── FILTER HELPERS ──────────────────────────────────────────────────────────
   List<WorkerStatementItem> _applyFilters(List<WorkerStatementItem> items) {

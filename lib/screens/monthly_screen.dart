@@ -253,15 +253,78 @@ class _OverviewTabState extends State<_OverviewTab> {
   Map<RawMaterialType, double> _stock = {};
   bool _stockLoaded = false;
 
+  // All-time buyer/worker account totals — independent of the selected
+  // month, mirrors the Overview tab on the Buyer/Worker Accounts screens.
+  double _buyerPending = 0;
+  double _buyerPaid = 0;
+  double _buyerSales = 0;
+  double _workerEarned = 0;
+  double _workerPaid = 0;
+  double _workerBalance = 0;
+  bool _accountsLoaded = false;
+
   @override
   void initState() {
     super.initState();
     _loadStock();
+    _loadAccountsTotals();
   }
 
   Future<void> _loadStock() async {
     final stock = await FirebaseService.instance.getTotalStock();
     if (mounted) setState(() { _stock = stock; _stockLoaded = true; });
+  }
+
+  /// All-time totals across every buyer and every worker — same figures
+  /// shown on the Buyer/Worker Accounts screens' Overview tabs, computed
+  /// independently here since this widget doesn't share that screen's state.
+  Future<void> _loadAccountsTotals() async {
+    final svc = FirebaseService.instance;
+    final allSales = await svc.getAllSales();
+    final buyerTxs = await svc.allBuyerSimpleTransactionsStream().first;
+    final workers = await svc.getWorkers();
+    final workerTxs = await svc.allWorkerSimpleTransactionsStream().first;
+
+    // ── Buyers: sales + manual dues (credit) minus payments (debit) ──────
+    double buyerSales = 0;
+    for (final sale in allSales) {
+      if (sale.buyerId != null && sale.buyerId!.isNotEmpty) {
+        buyerSales += sale.qty * sale.salePrice;
+      }
+    }
+    double buyerPaid = 0;
+    for (final tx in buyerTxs) {
+      if (tx.type == SimpleTxType.credit) {
+        buyerSales += tx.amount; // manual due, counts toward sales/owed
+      } else {
+        buyerPaid += tx.amount;
+      }
+    }
+
+    // ── Workers: earnings (rate × kg across all sales) minus payments ────
+    double workerEarned = 0;
+    for (final worker in workers) {
+      for (final sale in allSales) {
+        final rate = sale.workerRatesPerKg[worker.role];
+        if (rate != null) workerEarned += rate * sale.qty;
+      }
+    }
+    double workerPaid = 0;
+    for (final tx in workerTxs) {
+      if (tx.type == WorkerSimpleTxType.debit) workerPaid += tx.amount;
+    }
+
+    if (mounted) {
+      setState(() {
+        _buyerSales = buyerSales;
+        _buyerPaid = buyerPaid;
+        _buyerPending = buyerSales - buyerPaid;
+        _workerEarned = workerEarned;
+        _workerPaid = workerPaid;
+        _workerBalance = workerEarned - workerPaid;
+        _accountsLoaded = true;
+      });
+    }
   }
 
   @override
@@ -376,6 +439,52 @@ class _OverviewTabState extends State<_OverviewTab> {
         _sectionTitle('Material Stock Balance'),
         const SizedBox(height: 8),
         _buildStockBalanceCard(),
+        const SizedBox(height: 16),
+
+        // ── Buyer & Worker Accounts (All-Time) ───────────────────────────
+        _sectionTitle('Buyer Accounts (All-Time)'),
+        const SizedBox(height: 8),
+        if (!_accountsLoaded)
+          const Center(child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ))
+        else ...[
+          Row(children: [
+            Expanded(child: _kpi('Total Pending', 'Rs ${fmtInt.format(_buyerPending)}',
+                const Color(0xFFCC4444), const Color(0xFFFFE5E5))),
+            const SizedBox(width: 10),
+            Expanded(child: _kpi('Total Paid', 'Rs ${fmtInt.format(_buyerPaid)}',
+                const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
+          ]),
+          const SizedBox(height: 10),
+          SizedBox(width: double.infinity,
+              child: _kpi('Total Sales (All Buyers)', 'Rs ${fmtInt.format(_buyerSales)}',
+                  const Color(0xFF1F4E79), const Color(0xFFE6F1FB))),
+        ],
+        const SizedBox(height: 16),
+
+        _sectionTitle('Worker Accounts (All-Time)'),
+        const SizedBox(height: 8),
+        if (!_accountsLoaded)
+          const Center(child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ))
+        else ...[
+          Row(children: [
+            Expanded(child: _kpi('Total Earned', 'Rs ${fmtInt.format(_workerEarned)}',
+                const Color(0xFF1F4E79), const Color(0xFFE6F1FB))),
+            const SizedBox(width: 10),
+            Expanded(child: _kpi('Total Paid', 'Rs ${fmtInt.format(_workerPaid)}',
+                const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
+          ]),
+          const SizedBox(height: 10),
+          SizedBox(width: double.infinity,
+              child: _kpi('Total Balance (All Workers)', 'Rs ${fmtInt.format(_workerBalance)}',
+                  _workerBalance > 0 ? const Color(0xFFCC4444) : const Color(0xFF1A6B2A),
+                  _workerBalance > 0 ? const Color(0xFFFFE5E5) : const Color(0xFFC6EFCE))),
+        ],
         const SizedBox(height: 16),
 
         // ── Target progress ───────────────────────────────────────────────
@@ -1646,15 +1755,104 @@ class _FilterOverviewSubTabState extends State<_FilterOverviewSubTab> {
   Map<RawMaterialType, double> _stock = {};
   bool _stockLoaded = false;
 
+  // Buyer/worker account totals scoped to the selected date range — mirrors
+  // the all-time cards on the main Overview tab, but filtered to s.start..s.end.
+  double _buyerPending = 0;
+  double _buyerPaid = 0;
+  double _buyerSales = 0;
+  double _workerEarned = 0;
+  double _workerPaid = 0;
+  double _workerBalance = 0;
+  bool _accountsLoaded = false;
+  DateTime? _loadedStart;
+  DateTime? _loadedEnd;
+
   @override
   void initState() {
     super.initState();
     _loadStock();
+    _loadAccountsTotals();
+  }
+
+  @override
+  void didUpdateWidget(_FilterOverviewSubTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // The parent rebuilds this widget with a new summary whenever the date
+    // range / buyer / category filter changes — reload the account totals
+    // only when the range itself actually moved, to avoid refetching on
+    // every rebuild.
+    if (widget.summary.start != _loadedStart || widget.summary.end != _loadedEnd) {
+      _loadAccountsTotals();
+    }
   }
 
   Future<void> _loadStock() async {
     final stock = await FirebaseService.instance.getTotalStock();
     if (mounted) setState(() { _stock = stock; _stockLoaded = true; });
+  }
+
+  /// Buyer/worker totals restricted to [s.start, s.end] inclusive — same
+  /// sales+dues−payments / earnings−payments math used everywhere else,
+  /// just scoped to whatever range the Filter tab currently has selected.
+  Future<void> _loadAccountsTotals() async {
+    final svc = FirebaseService.instance;
+    final start = widget.summary.start;
+    final end = widget.summary.end;
+    final endExclusive = end.add(const Duration(days: 1));
+
+    bool inRange(DateTime d) => !d.isBefore(start) && d.isBefore(endExclusive);
+
+    final allSales = await svc.getAllSales();
+    final buyerTxs = await svc.allBuyerSimpleTransactionsStream().first;
+    final workers = await svc.getWorkers();
+    final workerTxs = await svc.allWorkerSimpleTransactionsStream().first;
+
+    final salesInRange = allSales.where((s) => inRange(s.date)).toList();
+    final buyerTxsInRange = buyerTxs.where((t) => inRange(t.dateTime)).toList();
+    final workerTxsInRange = workerTxs.where((t) => inRange(t.dateTime)).toList();
+
+    // ── Buyers: sales + manual dues (credit) minus payments (debit) ──────
+    double buyerSales = 0;
+    for (final sale in salesInRange) {
+      if (sale.buyerId != null && sale.buyerId!.isNotEmpty) {
+        buyerSales += sale.qty * sale.salePrice;
+      }
+    }
+    double buyerPaid = 0;
+    for (final tx in buyerTxsInRange) {
+      if (tx.type == SimpleTxType.credit) {
+        buyerSales += tx.amount;
+      } else {
+        buyerPaid += tx.amount;
+      }
+    }
+
+    // ── Workers: earnings (rate × kg across sales in range) minus payments ─
+    double workerEarned = 0;
+    for (final worker in workers) {
+      for (final sale in salesInRange) {
+        final rate = sale.workerRatesPerKg[worker.role];
+        if (rate != null) workerEarned += rate * sale.qty;
+      }
+    }
+    double workerPaid = 0;
+    for (final tx in workerTxsInRange) {
+      if (tx.type == WorkerSimpleTxType.debit) workerPaid += tx.amount;
+    }
+
+    if (mounted) {
+      setState(() {
+        _buyerSales = buyerSales;
+        _buyerPaid = buyerPaid;
+        _buyerPending = buyerSales - buyerPaid;
+        _workerEarned = workerEarned;
+        _workerPaid = workerPaid;
+        _workerBalance = workerEarned - workerPaid;
+        _accountsLoaded = true;
+        _loadedStart = start;
+        _loadedEnd = end;
+      });
+    }
   }
 
   @override
@@ -1792,6 +1990,52 @@ class _FilterOverviewSubTabState extends State<_FilterOverviewSubTab> {
         _filterSectionTitle('Material Stock Balance'),
         const SizedBox(height: 8),
         _buildFilterStockCard(),
+        const SizedBox(height: 18),
+
+        // ── Buyer & Worker Accounts (Selected Range) ─────────────────────
+        _filterSectionTitle('Buyer Accounts (Selected Range)'),
+        const SizedBox(height: 8),
+        if (!_accountsLoaded)
+          const Center(child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ))
+        else ...[
+          Row(children: [
+            Expanded(child: _filterKpi('Total Pending', 'Rs ${fmtInt.format(_buyerPending)}',
+                const Color(0xFFCC4444), const Color(0xFFFFE5E5))),
+            const SizedBox(width: 10),
+            Expanded(child: _filterKpi('Total Paid', 'Rs ${fmtInt.format(_buyerPaid)}',
+                const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
+          ]),
+          const SizedBox(height: 10),
+          SizedBox(width: double.infinity,
+              child: _filterKpi('Total Sales (All Buyers)', 'Rs ${fmtInt.format(_buyerSales)}',
+                  const Color(0xFF1F4E79), const Color(0xFFE6F1FB))),
+        ],
+        const SizedBox(height: 18),
+
+        _filterSectionTitle('Worker Accounts (Selected Range)'),
+        const SizedBox(height: 8),
+        if (!_accountsLoaded)
+          const Center(child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ))
+        else ...[
+          Row(children: [
+            Expanded(child: _filterKpi('Total Earned', 'Rs ${fmtInt.format(_workerEarned)}',
+                const Color(0xFF1F4E79), const Color(0xFFE6F1FB))),
+            const SizedBox(width: 10),
+            Expanded(child: _filterKpi('Total Paid', 'Rs ${fmtInt.format(_workerPaid)}',
+                const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
+          ]),
+          const SizedBox(height: 10),
+          SizedBox(width: double.infinity,
+              child: _filterKpi('Total Balance (All Workers)', 'Rs ${fmtInt.format(_workerBalance)}',
+                  _workerBalance > 0 ? const Color(0xFFCC4444) : const Color(0xFF1A6B2A),
+                  _workerBalance > 0 ? const Color(0xFFFFE5E5) : const Color(0xFFC6EFCE))),
+        ],
         const SizedBox(height: 18),
 
         // ── Profit trend chart ─────────────────────────────────────────

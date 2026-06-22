@@ -14,14 +14,23 @@ class BuyerTransactionsScreen extends StatefulWidget {
   State<BuyerTransactionsScreen> createState() => _BuyerTransactionsScreenState();
 }
 
-class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
+class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen>
+    with SingleTickerProviderStateMixin {
   final _svc = FirebaseService.instance;
   final _fmt = NumberFormat('#,##0.00', 'en_IN');
   Buyer? _selectedBuyer;
-  
+
+  // Tabs shown on the "all buyers" list screen: Overview | Buyers | Filter
+  late TabController _listTabs;
+
   // Cache for statement data
   Map<String, List<StatementItem>> _statementCache = {};
   Map<String, double> _buyerSalesTotal = {};
+
+  // Raw data cached once, re-sliced locally whenever the list-screen date
+  // range changes — avoids re-fetching from Firestore on every date pick.
+  List<Sale> _allSalesRaw = [];
+  List<SimpleTransaction> _allBuyerTxRaw = [];
 
   // ── Filter state (statement view) ────────────────────────────────────────
   bool      _showFilter  = false;
@@ -31,9 +40,17 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
   DateTime? _filterTo;
   final _searchCtrl = TextEditingController();
 
+  // ── Filter state (all-buyers Filter tab) ─────────────────────────────────
+  String    _listSearchQuery = '';
+  String    _listStatusFilter = 'all'; // 'all' | 'due' | 'advance'
+  final _listSearchCtrl = TextEditingController();
+  DateTime? _listFilterFrom;
+  DateTime? _listFilterTo;
+
   @override
   void initState() {
     super.initState();
+    _listTabs = TabController(length: 3, vsync: this);
     _selectedBuyer = widget.buyer;
     _loadAllData();
   }
@@ -41,6 +58,8 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
   @override
   void dispose() {
     _searchCtrl.dispose();
+    _listSearchCtrl.dispose();
+    _listTabs.dispose();
     super.dispose();
   }
 
@@ -64,6 +83,10 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
 
   Future<void> _loadSalesTotals() async {
     final allSales = await _svc.getAllSales();
+    final allTx = await _svc.allBuyerSimpleTransactionsStream().first;
+    _allSalesRaw = allSales;
+    _allBuyerTxRaw = allTx;
+
     final Map<String, double> totals = {};
     for (final sale in allSales) {
       if (sale.buyerId != null && sale.buyerId!.isNotEmpty) {
@@ -73,13 +96,71 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
     }
     // Manual dues (credit entries not tied to a sale — e.g. opening balance,
     // an old due, an adjustment) must also count toward what the buyer owes.
-    final allTx = await _svc.allBuyerSimpleTransactionsStream().first;
     for (final tx in allTx) {
       if (tx.type == SimpleTxType.credit && tx.buyerId.isNotEmpty) {
         totals[tx.buyerId] = (totals[tx.buyerId] ?? 0) + tx.amount;
       }
     }
     setState(() => _buyerSalesTotal = totals);
+  }
+
+  /// Computes per-buyer {credit, debit, pending} either across all time
+  /// (when from/to are null) or restricted to [from, to] inclusive — used to
+  /// drive the Overview cards, Buyers list, and Filter tab together so a
+  /// date range picked in Filter updates every tab consistently.
+  Map<String, Map<String, double>> _computeBuyerBalances({
+    required List<Buyer> buyers,
+    required List<SimpleTransaction> liveTx,
+    DateTime? from,
+    DateTime? to,
+  }) {
+    final toExclusive = to?.add(const Duration(days: 1));
+
+    bool inRange(DateTime d) {
+      if (from != null && d.isBefore(from)) return false;
+      if (toExclusive != null && !d.isBefore(toExclusive)) return false;
+      return true;
+    }
+
+    final sales = (from == null && to == null)
+        ? _allSalesRaw
+        : _allSalesRaw.where((s) => inRange(s.date)).toList();
+    // Prefer the live stream (kept fresh by StreamBuilder) but fall back to
+    // the cached snapshot if the stream hasn't emitted yet.
+    final txSource = liveTx.isNotEmpty ? liveTx : _allBuyerTxRaw;
+    final txs = (from == null && to == null)
+        ? txSource
+        : txSource.where((t) => inRange(t.dateTime)).toList();
+
+    final Map<String, double> salesTotal = {};
+    for (final sale in sales) {
+      if (sale.buyerId != null && sale.buyerId!.isNotEmpty) {
+        salesTotal[sale.buyerId!] =
+            (salesTotal[sale.buyerId!] ?? 0) + sale.qty * sale.salePrice;
+      }
+    }
+    for (final tx in txs) {
+      if (tx.type == SimpleTxType.credit && tx.buyerId.isNotEmpty) {
+        salesTotal[tx.buyerId] = (salesTotal[tx.buyerId] ?? 0) + tx.amount;
+      }
+    }
+
+    final Map<String, Map<String, double>> balances = {};
+    for (final buyer in buyers) {
+      double totalDebit = 0;
+      for (final tx in txs) {
+        if (tx.buyerId == buyer.id && tx.type == SimpleTxType.debit) {
+          totalDebit += tx.amount;
+        }
+      }
+      final totalSales = salesTotal[buyer.id!] ?? 0;
+      balances[buyer.id!] = {
+        'credit': totalSales,
+        'debit': totalDebit,
+        'pending': totalSales - totalDebit,
+      };
+    }
+    return balances;
   }
 
   Future<void> _refreshStatement(String buyerId) async {
@@ -96,6 +177,16 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
         title: _selectedBuyer == null 
             ? const Text('Buyer Accounts')
             : Text('Statement - ${_selectedBuyer!.name}'),
+        bottom: _selectedBuyer == null
+            ? TabBar(
+                controller: _listTabs,
+                tabs: const [
+                  Tab(text: 'Overview'),
+                  Tab(text: 'Buyers'),
+                  Tab(text: 'Filter', icon: Icon(Icons.filter_alt_outlined, size: 16)),
+                ],
+              )
+            : null,
         actions: [
           if (_selectedBuyer != null) ...[
             IconButton(
@@ -121,11 +212,19 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
                 setState(() => _selectedBuyer = null);
               },
             ),
-          ],
+          ] else
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh',
+              onPressed: () async {
+                await _loadSalesTotals();
+                setState(() {});
+              },
+            ),
         ],
       ),
       body: _selectedBuyer == null
-          ? _buildAllBuyersView()
+          ? _buildAllBuyersTabs()
           : _buildBuyerStatementView(_selectedBuyer!),
       floatingActionButton: _selectedBuyer != null
           ? Column(
@@ -155,7 +254,11 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
     );
   }
 
-  Widget _buildAllBuyersView() {
+
+  /// Wraps the all-buyers data stream once and dispatches to the 3 list-screen
+  /// tabs (Overview / Buyers / Filter) so all of them share the same balances
+  /// computed from a single StreamBuilder pair — avoids recomputation drift.
+  Widget _buildAllBuyersTabs() {
     return StreamBuilder<List<Buyer>>(
       stream: _svc.buyersStream(),
       builder: (ctx, buyersSnap) {
@@ -164,7 +267,7 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
         }
 
         final buyers = buyersSnap.data ?? [];
-        
+
         if (buyers.isEmpty) {
           return Center(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -184,62 +287,383 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen> {
           stream: _svc.allBuyerSimpleTransactionsStream(),
           builder: (ctx, txsSnap) {
             final allTransactions = txsSnap.data ?? [];
-            
-            final Map<String, Map<String, double>> buyerBalances = {};
-            
-            for (final buyer in buyers) {
-              final buyerTxs = allTransactions.where((tx) => tx.buyerId == buyer.id).toList();
 
-              // Only debit (payments received) is summed here — manual credit
-              // (dues) is already folded into _buyerSalesTotal in
-              // _loadSalesTotals(), so summing it again here would double it.
-              double totalDebit = 0;
-              for (final tx in buyerTxs) {
-                if (tx.type == SimpleTxType.debit) {
-                  totalDebit += tx.amount;
-                }
-              }
+            final buyerBalances = _computeBuyerBalances(
+              buyers: buyers,
+              liveTx: allTransactions,
+              from: _listFilterFrom,
+              to: _listFilterTo,
+            );
 
-              // totalSales here = sales + any manual dues (see _loadSalesTotals).
-              final totalSales = _buyerSalesTotal[buyer.id!] ?? 0;
-              final pending = totalSales - totalDebit;
-              
-              buyerBalances[buyer.id!] = {
-                'credit': totalSales,
-                'debit': totalDebit,
-                'pending': pending,
-              };
+            // ── Aggregate totals across ALL buyers for the Overview cards ──
+            double grandPending = 0;
+            double grandPaid = 0;
+            double grandSales = 0;
+            for (final b in buyerBalances.values) {
+              grandSales   += b['credit']!;
+              grandPaid    += b['debit']!;
+              grandPending += b['pending']!;
             }
-            
+
             final sortedBuyers = List<Buyer>.from(buyers);
-            sortedBuyers.sort((a, b) => 
+            sortedBuyers.sort((a, b) =>
                 (buyerBalances[b.id!]?['pending'] ?? 0).compareTo(buyerBalances[a.id!]?['pending'] ?? 0));
-            
-            return RefreshIndicator(
-              onRefresh: () async {
-                await _loadSalesTotals();
-                setState(() {});
-              },
-              child: ListView.builder(
-                padding: const EdgeInsets.all(16),
-                itemCount: sortedBuyers.length,
-                itemBuilder: (_, i) => _BuyerAccountCard(
-                  buyer: sortedBuyers[i],
-                  totalCredit: buyerBalances[sortedBuyers[i].id!]!['credit']!,
-                  totalDebit: buyerBalances[sortedBuyers[i].id!]!['debit']!,
-                  pending: buyerBalances[sortedBuyers[i].id!]!['pending']!,
-                  fmt: _fmt,
-                  onTap: () => setState(() => _selectedBuyer = sortedBuyers[i]),
-                  onAddPayment: () => _openPaymentForm(sortedBuyers[i]),
-                  onAddDue: () => _openDueForm(sortedBuyers[i]),
-                ),
-              ),
+
+            return TabBarView(
+              controller: _listTabs,
+              children: [
+                _buildBuyerOverviewTab(grandPending, grandPaid, grandSales, sortedBuyers, buyerBalances),
+                _buildBuyerListTab(sortedBuyers, buyerBalances),
+                _buildBuyerFilterTab(sortedBuyers, buyerBalances),
+              ],
             );
           },
         );
       },
     );
   }
+
+  Future<void> _onRefreshAllBuyers() async {
+    await _loadSalesTotals();
+    setState(() {});
+  }
+
+  // ── TAB 1: Overview ──────────────────────────────────────────────────────
+  Widget _buildBuyerOverviewTab(
+    double grandPending,
+    double grandPaid,
+    double grandSales,
+    List<Buyer> sortedBuyers,
+    Map<String, Map<String, double>> buyerBalances,
+  ) {
+    final hasRange = _listFilterFrom != null || _listFilterTo != null;
+    return RefreshIndicator(
+      onRefresh: _onRefreshAllBuyers,
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (hasRange)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF8E1),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(children: [
+                const Icon(Icons.date_range, size: 16, color: Color(0xFF7B4F06)),
+                const SizedBox(width: 8),
+                Expanded(child: Text(_rangeLabel(),
+                    style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+                        color: Color(0xFF7B4F06)))),
+                GestureDetector(
+                  onTap: () => setState(() {
+                    _listFilterFrom = null;
+                    _listFilterTo = null;
+                  }),
+                  child: const Icon(Icons.close, size: 16, color: Color(0xFF7B4F06)),
+                ),
+              ]),
+            ),
+          Row(children: [
+            Expanded(child: _summaryCard(
+                'Total Pending', grandPending, const Color(0xFFCC4444), const Color(0xFFFFE5E5))),
+            const SizedBox(width: 10),
+            Expanded(child: _summaryCard(
+                'Total Paid', grandPaid, const Color(0xFF1A6B2A), const Color(0xFFC6EFCE))),
+          ]),
+          const SizedBox(height: 10),
+          _summaryCard(
+              hasRange ? 'Total Sales (Selected Range)' : 'Total Sales (All Buyers)',
+              grandSales, const Color(0xFF1F4E79), const Color(0xFFE6F1FB),
+              fullWidth: true),
+          const SizedBox(height: 20),
+
+          Text('Top Buyers by Pending Amount',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: Color(0xFF333333))),
+          const SizedBox(height: 10),
+
+          ...sortedBuyers.take(5).map((buyer) {
+            final bal = buyerBalances[buyer.id!]!;
+            final pending = bal['pending']!;
+            final isDebt = pending > 0;
+            final color = isDebt ? const Color(0xFFCC4444) : const Color(0xFF1A6B2A);
+            return Card(
+              margin: const EdgeInsets.only(bottom: 8),
+              elevation: 1,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              child: ListTile(
+                onTap: () => setState(() => _selectedBuyer = buyer),
+                title: Text(buyer.name, style: const TextStyle(fontWeight: FontWeight.w600)),
+                subtitle: buyer.phone.isNotEmpty ? Text(buyer.phone) : null,
+                trailing: Text('Rs ${_fmt.format(pending.abs())}',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: color)),
+              ),
+            );
+          }),
+
+          if (sortedBuyers.length > 5) ...[
+            const SizedBox(height: 6),
+            Center(
+              child: TextButton.icon(
+                onPressed: () => _listTabs.animateTo(1),
+                icon: const Icon(Icons.list, size: 18),
+                label: Text('View all ${sortedBuyers.length} buyers'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  String _rangeLabel() {
+    final df = DateFormat('dd MMM yyyy');
+    if (_listFilterFrom != null && _listFilterTo != null) {
+      return 'Showing: ${df.format(_listFilterFrom!)} – ${df.format(_listFilterTo!)}';
+    } else if (_listFilterFrom != null) {
+      return 'Showing: from ${df.format(_listFilterFrom!)}';
+    } else if (_listFilterTo != null) {
+      return 'Showing: up to ${df.format(_listFilterTo!)}';
+    }
+    return '';
+  }
+
+  Widget _summaryCard(String label, double value, Color color, Color bg, {bool fullWidth = false}) {
+    final isNegative = value < 0;
+    return Container(
+      width: fullWidth ? double.infinity : null,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(fontSize: 11, color: color.withOpacity(0.75), fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          Text('Rs ${_fmt.format(value.abs())}${isNegative ? ' Cr' : ''}',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color)),
+        ],
+      ),
+    );
+  }
+
+  // ── TAB 2: Buyers list (original behaviour) ──────────────────────────────
+  Widget _buildBuyerListTab(
+    List<Buyer> sortedBuyers,
+    Map<String, Map<String, double>> buyerBalances,
+  ) {
+    return RefreshIndicator(
+      onRefresh: _onRefreshAllBuyers,
+      child: ListView.builder(
+        padding: const EdgeInsets.all(16),
+        itemCount: sortedBuyers.length,
+        itemBuilder: (_, i) => _BuyerAccountCard(
+          buyer: sortedBuyers[i],
+          totalCredit: buyerBalances[sortedBuyers[i].id!]!['credit']!,
+          totalDebit: buyerBalances[sortedBuyers[i].id!]!['debit']!,
+          pending: buyerBalances[sortedBuyers[i].id!]!['pending']!,
+          fmt: _fmt,
+          onTap: () => setState(() => _selectedBuyer = sortedBuyers[i]),
+          onAddPayment: () => _openPaymentForm(sortedBuyers[i]),
+          onAddDue: () => _openDueForm(sortedBuyers[i]),
+        ),
+      ),
+    );
+  }
+
+  // ── TAB 3: Filter (search + status filter across all buyers) ────────────
+  Widget _buildBuyerFilterTab(
+    List<Buyer> sortedBuyers,
+    Map<String, Map<String, double>> buyerBalances,
+  ) {
+    var filtered = sortedBuyers.where((buyer) {
+      final bal = buyerBalances[buyer.id!]!;
+      final pending = bal['pending']!;
+
+      if (_listStatusFilter == 'due' && pending <= 0) return false;
+      if (_listStatusFilter == 'advance' && pending > 0) return false;
+
+      if (_listSearchQuery.isNotEmpty) {
+        final q = _listSearchQuery.toLowerCase();
+        if (!buyer.name.toLowerCase().contains(q) &&
+            !buyer.phone.toLowerCase().contains(q)) return false;
+      }
+      return true;
+    }).toList();
+
+    return Column(
+      children: [
+        Container(
+          color: const Color(0xFFF5F8FF),
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            TextField(
+              controller: _listSearchCtrl,
+              onChanged: (v) => setState(() => _listSearchQuery = v),
+              decoration: InputDecoration(
+                hintText: 'Search buyer name or phone…',
+                prefixIcon: const Icon(Icons.search, size: 18),
+                suffixIcon: _listSearchQuery.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear, size: 16),
+                        onPressed: () {
+                          _listSearchCtrl.clear();
+                          setState(() => _listSearchQuery = '');
+                        })
+                    : null,
+                filled: true,
+                fillColor: Colors.white,
+                isDense: true,
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+            ),
+            const SizedBox(height: 12),
+            const Text('Date range (applies to totals everywhere)',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF555555))),
+            const SizedBox(height: 6),
+            Row(children: [
+              Expanded(child: _listDatePicker(
+                label: _listFilterFrom == null
+                    ? 'Start date'
+                    : DateFormat('dd MMM yy').format(_listFilterFrom!),
+                color: const Color(0xFF1F4E79),
+                onTap: () async {
+                  final d = await showDatePicker(
+                    context: context,
+                    initialDate: _listFilterFrom ?? DateTime.now(),
+                    firstDate: DateTime(2020),
+                    lastDate: _listFilterTo ?? DateTime.now(),
+                  );
+                  if (d != null) setState(() => _listFilterFrom = d);
+                },
+                onClear: _listFilterFrom != null
+                    ? () => setState(() => _listFilterFrom = null) : null,
+              )),
+              const SizedBox(width: 8),
+              Expanded(child: _listDatePicker(
+                label: _listFilterTo == null
+                    ? 'End date'
+                    : DateFormat('dd MMM yy').format(_listFilterTo!),
+                color: const Color(0xFF1F4E79),
+                onTap: () async {
+                  final d = await showDatePicker(
+                    context: context,
+                    initialDate: _listFilterTo ?? DateTime.now(),
+                    firstDate: _listFilterFrom ?? DateTime(2020),
+                    lastDate: DateTime.now(),
+                  );
+                  if (d != null) setState(() => _listFilterTo = d);
+                },
+                onClear: _listFilterTo != null
+                    ? () => setState(() => _listFilterTo = null) : null,
+              )),
+            ]),
+            const SizedBox(height: 12),
+            const Text('Status',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: Color(0xFF555555))),
+            const SizedBox(height: 6),
+            Row(children: [
+              _statusChip('All', 'all', const Color(0xFF555555)),
+              const SizedBox(width: 8),
+              _statusChip('To Pay', 'due', const Color(0xFFCC4444)),
+              const SizedBox(width: 8),
+              _statusChip('Advance', 'advance', const Color(0xFF1A6B2A)),
+            ]),
+            if (_listStatusFilter != 'all' || _listSearchQuery.isNotEmpty ||
+                _listFilterFrom != null || _listFilterTo != null) ...[
+              const SizedBox(height: 10),
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: () => setState(() {
+                    _listStatusFilter = 'all';
+                    _listSearchQuery = '';
+                    _listSearchCtrl.clear();
+                    _listFilterFrom = null;
+                    _listFilterTo = null;
+                  }),
+                  icon: const Icon(Icons.filter_list_off, size: 16),
+                  label: const Text('Clear all filters', style: TextStyle(fontSize: 12)),
+                  style: TextButton.styleFrom(foregroundColor: const Color(0xFFCC4444)),
+                ),
+              ),
+            ],
+          ]),
+        ),
+        Expanded(
+          child: filtered.isEmpty
+              ? Center(
+                  child: Column(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.search_off, size: 56, color: Colors.grey.shade300),
+                    const SizedBox(height: 10),
+                    Text('No buyers match this filter',
+                        style: TextStyle(color: Colors.grey.shade400, fontWeight: FontWeight.w600)),
+                  ]),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: filtered.length,
+                  itemBuilder: (_, i) => _BuyerAccountCard(
+                    buyer: filtered[i],
+                    totalCredit: buyerBalances[filtered[i].id!]!['credit']!,
+                    totalDebit: buyerBalances[filtered[i].id!]!['debit']!,
+                    pending: buyerBalances[filtered[i].id!]!['pending']!,
+                    fmt: _fmt,
+                    onTap: () => setState(() => _selectedBuyer = filtered[i]),
+                    onAddPayment: () => _openPaymentForm(filtered[i]),
+                    onAddDue: () => _openDueForm(filtered[i]),
+                  ),
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _statusChip(String label, String value, Color color) => GestureDetector(
+    onTap: () => setState(() => _listStatusFilter = value),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: _listStatusFilter == value ? color : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Text(label,
+          style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600,
+              color: _listStatusFilter == value ? Colors.white : color)),
+    ),
+  );
+
+  Widget _listDatePicker({
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+    VoidCallback? onClear,
+  }) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: Row(children: [
+            Icon(Icons.calendar_today, size: 14, color: color),
+            const SizedBox(width: 6),
+            Expanded(child: Text(label,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
+            if (onClear != null)
+              GestureDetector(
+                onTap: onClear,
+                child: Icon(Icons.close, size: 14, color: Colors.grey.shade400)),
+          ]),
+        ),
+      );
+
 
   // ── FILTER HELPERS ──────────────────────────────────────────────────────────
   List<StatementItem> _applyFilters(List<StatementItem> items) {
