@@ -19,12 +19,19 @@ class _InvestmentTrackerScreenState extends State<InvestmentTrackerScreen>
 
   Map<RawMaterialType, double> _stock = {};
   bool _loadingStock = true;
+  double _lowStockThreshold = 0;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 3, vsync: this);
     _loadStock();
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final s = await _svc.getAppSettings();
+    setState(() => _lowStockThreshold = s.lowStockThresholdKg);
   }
 
   // UPDATED: use getTotalStock() to include party stocks
@@ -53,7 +60,7 @@ class _InvestmentTrackerScreenState extends State<InvestmentTrackerScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
-          _InventoryTab(stock: _stock, loading: _loadingStock, fmt: _fmt, onRefresh: _loadStock),
+          _InventoryTab(stock: _stock, loading: _loadingStock, fmt: _fmt, onRefresh: _loadStock, lowStockThreshold: _lowStockThreshold),
           _TransactionsTab(fmt: _fmt, onRefresh: _loadStock),
           _PartiesTab(fmt: _fmt, onRefresh: _loadStock),
         ],
@@ -84,8 +91,9 @@ class _InventoryTab extends StatelessWidget {
   final bool loading;
   final NumberFormat fmt;
   final VoidCallback onRefresh;
+  final double lowStockThreshold;
 
-  const _InventoryTab({required this.stock, required this.loading, required this.fmt, required this.onRefresh});
+  const _InventoryTab({required this.stock, required this.loading, required this.fmt, required this.onRefresh, this.lowStockThreshold = 0});
 
   @override
   Widget build(BuildContext context) {
@@ -99,8 +107,10 @@ class _InventoryTab extends StatelessWidget {
         itemBuilder: (_, i) {
           final type = materials[i];
           final kg = stock[type] ?? 0;
+          final isLow = lowStockThreshold > 0 && kg >= 0 && kg < lowStockThreshold;
           return Card(
             margin: const EdgeInsets.only(bottom: 12),
+            color: isLow ? Colors.red.shade50 : null,
             child: ListTile(
               leading: CircleAvatar(
                 backgroundColor: type.isSheet ? const Color(0xFFE6F1FB) : const Color(0xFFFAEEDA),
@@ -108,7 +118,9 @@ class _InventoryTab extends StatelessWidget {
               ),
               title: Text(type.displayName, style: const TextStyle(fontWeight: FontWeight.bold)),
               subtitle: Text('${kg.toStringAsFixed(2)} kg', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: kg >= 0 ? Colors.green.shade700 : Colors.red)),
-              trailing: Text('in stock', style: TextStyle(color: Colors.grey.shade500)),
+              trailing: isLow
+                  ? const Text('Low stock', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold))
+                  : Text(kg < 0 ? 'Deficit' : 'in stock', style: TextStyle(color: kg < 0 ? Colors.red : Colors.grey.shade500)),
             ),
           );
         },
@@ -228,13 +240,24 @@ class _PartiesTabState extends State<_PartiesTab> {
                   padding: const EdgeInsets.all(12),
                   child: Column(
                     children: party.stock.entries.map((entry) {
+                      final value = entry.value;
+                      final isDebt = value < 0;
                       return Padding(
                         padding: const EdgeInsets.symmetric(vertical: 4),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Text(entry.key.displayName, style: const TextStyle(fontSize: 13)),
-                            Text('${entry.value.toStringAsFixed(2)} kg', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                            Text(
+                              isDebt
+                                  ? 'Owes ${(-value).toStringAsFixed(2)} kg'
+                                  : '${value.toStringAsFixed(2)} kg',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 14,
+                                color: isDebt ? Colors.red : null,
+                              ),
+                            ),
                           ],
                         ),
                       );
@@ -266,17 +289,39 @@ class _AddMaterialTransactionSheetState extends State<_AddMaterialTransactionShe
   final _qtyCtrl = TextEditingController();
   final _rateCtrl = TextEditingController();
   DateTime _date = DateTime.now();
+
+  // Company vs Party. Defaults to Company ("mine") per the simple rule:
+  // if a buyer actually hands over sheet, switch to Party and pick them;
+  // otherwise it's a normal company purchase.
+  bool _isCompanyPurchase = true;
   String? _supplierId;
   String _supplierName = '';
+  String? _supplierType; // 'buyer' or 'supplier' — exactly what was picked
   bool _isCredit = false;
   final _noteCtrl = TextEditingController();
 
   List<Map<String, dynamic>> _parties = [];
+  AppSettings _appSettings = const AppSettings();
 
   @override
   void initState() {
     super.initState();
     _loadParties();
+    _loadDefaultRate();
+  }
+
+  Future<void> _loadDefaultRate() async {
+    final s = await _svc.getAppSettings();
+    setState(() {
+      _appSettings = s;
+      _applyDefaultRate();
+    });
+  }
+
+  void _applyDefaultRate() {
+    if (_rateCtrl.text.isNotEmpty) return; // don't overwrite a value the user typed
+    final v = _appSettings.defaultRatesPerKg[_material.displayName];
+    if (v != null && v > 0) _rateCtrl.text = v.toStringAsFixed(0);
   }
 
   Future<void> _loadParties() async {
@@ -297,9 +342,9 @@ class _AddMaterialTransactionSheetState extends State<_AddMaterialTransactionShe
     final rate = double.tryParse(_rateCtrl.text);
     if (qty == null || rate == null || qty <= 0 || rate <= 0) return;
 
-    // For purchases only, we require a party
-    if (_type == 'purchase' && (_supplierId == null || _supplierName.isEmpty)) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select a supplier or buyer for this purchase')));
+    // For purchases only: if it's NOT a company purchase, a party must be picked.
+    if (_type == 'purchase' && !_isCompanyPurchase && (_supplierId == null || _supplierName.isEmpty)) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select who gave the sheet (buyer or supplier)')));
       return;
     }
 
@@ -309,14 +354,15 @@ class _AddMaterialTransactionSheetState extends State<_AddMaterialTransactionShe
       quantityKg: qty,
       ratePerKg: rate,
       transactionType: _type,
-      supplierId: _supplierId,
-      supplierName: _supplierName,
-      isCredit: _type == 'purchase' && _isCredit,
-      creditAmount: _type == 'purchase' && _isCredit ? qty * rate : 0,
+      supplierId: _isCompanyPurchase ? null : _supplierId,
+      supplierName: _isCompanyPurchase ? null : _supplierName,
+      isCredit: _type == 'purchase' && !_isCompanyPurchase && _isCredit,
+      creditAmount: _type == 'purchase' && !_isCompanyPurchase && _isCredit ? qty * rate : 0,
       note: _noteCtrl.text,
     );
-    // addRawMaterialTransaction already updates party stock internally
-    await _svc.addRawMaterialTransaction(tx);
+    // addRawMaterialTransaction already updates party stock internally.
+    // partyType is passed explicitly — never guessed from the ID.
+    await _svc.addRawMaterialTransaction(tx, partyType: _isCompanyPurchase ? null : _supplierType);
 
     widget.onSaved();
     if (mounted) Navigator.pop(context);
@@ -335,7 +381,11 @@ class _AddMaterialTransactionSheetState extends State<_AddMaterialTransactionShe
           DropdownButtonFormField<RawMaterialType>(
             value: _material,
             items: RawMaterialType.values.map((e) => DropdownMenuItem(value: e, child: Text(e.displayName))).toList(),
-            onChanged: (v) => setState(() => _material = v!),
+            onChanged: (v) => setState(() {
+              _material = v!;
+              _rateCtrl.clear();
+              _applyDefaultRate();
+            }),
             decoration: const InputDecoration(labelText: 'Material'),
           ),
           const SizedBox(height: 12),
@@ -359,39 +409,42 @@ class _AddMaterialTransactionSheetState extends State<_AddMaterialTransactionShe
             ),
           ),
           const SizedBox(height: 12),
-          if (_type == 'purchase')
-            DropdownButtonFormField<String>(
-              value: _supplierId,
-              hint: const Text('Select supplier or buyer'),
-              isExpanded: true,
-              items: [
-                const DropdownMenuItem(value: null, child: Text('No party')),
-                ..._parties.map((p) => DropdownMenuItem(value: p['id'], child: Text('${p['name']} (${p['type'] == 'supplier' ? 'Supplier' : 'Buyer'})'))),
-              ],
-              onChanged: (id) {
-                if (id == null) {
-                  setState(() {
-                    _supplierId = null;
-                    _supplierName = '';
-                    _isCredit = false;
-                  });
-                } else {
+          if (_type == 'purchase') ...[
+            const Align(alignment: Alignment.centerLeft, child: Text('Who gave the sheet?', style: TextStyle(fontWeight: FontWeight.w600))),
+            const SizedBox(height: 8),
+            Row(children: [
+              Expanded(child: _buildSourceButton(true, Icons.factory, 'Company (mine)')),
+              const SizedBox(width: 12),
+              Expanded(child: _buildSourceButton(false, Icons.handshake, 'Party')),
+            ]),
+            const SizedBox(height: 12),
+            if (!_isCompanyPurchase) ...[
+              DropdownButtonFormField<String>(
+                value: _supplierId,
+                hint: const Text('Select buyer or supplier'),
+                isExpanded: true,
+                items: _parties.map((p) => DropdownMenuItem(value: p['id'] as String, child: Text('${p['name']} (${p['type'] == 'supplier' ? 'Supplier' : 'Buyer'})'))).toList(),
+                onChanged: (id) {
+                  if (id == null) return;
                   final party = _parties.firstWhere((p) => p['id'] == id);
                   setState(() {
                     _supplierId = id;
                     _supplierName = party['name'];
-                    if (party['type'] != 'supplier') _isCredit = false;
+                    _supplierType = party['type'];
+                    if (_supplierType != 'supplier') _isCredit = false;
                   });
-                }
-              },
-              decoration: const InputDecoration(labelText: 'Party (Supplier/Buyer)'),
-            ),
-          if (_type == 'purchase' && _supplierId != null && _parties.firstWhere((p) => p['id'] == _supplierId)['type'] == 'supplier')
-            SwitchListTile(
-              title: const Text('Purchase on credit'),
-              value: _isCredit,
-              onChanged: (v) => setState(() => _isCredit = v),
-            ),
+                },
+                decoration: const InputDecoration(labelText: 'Party'),
+              ),
+              if (_supplierId != null && _supplierType == 'supplier')
+                SwitchListTile(
+                  title: const Text('Purchase on credit'),
+                  value: _isCredit,
+                  onChanged: (v) => setState(() => _isCredit = v),
+                ),
+              const SizedBox(height: 4),
+            ],
+          ],
           TextField(controller: _noteCtrl, decoration: const InputDecoration(labelText: 'Note (optional)')),
           const SizedBox(height: 20),
           SizedBox(width: double.infinity, height: 50,
@@ -405,5 +458,21 @@ class _AddMaterialTransactionSheetState extends State<_AddMaterialTransactionShe
     label: Row(mainAxisSize: MainAxisSize.min, children: [Icon(icon, size: 16), const SizedBox(width: 4), Text(label)]),
     selected: _type == type,
     onSelected: (_) => setState(() => _type = type),
+  );
+
+  // Company = own/global stock (default). Party = a buyer or supplier
+  // actually handed over sheet this time, so we track it against their name.
+  Widget _buildSourceButton(bool isCompany, IconData icon, String label) => FilterChip(
+    label: Row(mainAxisSize: MainAxisSize.min, children: [Icon(icon, size: 16), const SizedBox(width: 4), Text(label)]),
+    selected: _isCompanyPurchase == isCompany,
+    onSelected: (_) => setState(() {
+      _isCompanyPurchase = isCompany;
+      if (isCompany) {
+        _supplierId = null;
+        _supplierName = '';
+        _supplierType = null;
+        _isCredit = false;
+      }
+    }),
   );
 }

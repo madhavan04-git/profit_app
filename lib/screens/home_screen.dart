@@ -11,6 +11,7 @@ import 'products_screen.dart';
 import 'buyer_transactions_screen.dart';
 import 'worker_transactions_screen.dart';
 import 'investment_tracker_screen.dart';
+import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -32,6 +33,10 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _loading = true;
   int _navIndex = 2; // 0=Monthly, 1=Investment, 2=Home, 3=BuyerTx, 4=WorkerTx
 
+  // Pattarai (shop/label) tabs — display only, tags new sales.
+  List<Pattarai> _pattarais = [];
+  String? _selectedPattaraiName;
+
   @override
   void initState() {
     super.initState();
@@ -47,8 +52,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _svc.getWorkers(),
       _svc.salesForDate(_date),
       _svc.monthlyTotalProfit(_date.year, _date.month),
+      _svc.getPattarais(),
     ]);
     final sales = results[3] as List<Sale>;
+    final pattarais = results[5] as List<Pattarai>;
     setState(() {
       _products = results[0] as List<Product>;
       _buyers = results[1] as List<Buyer>;
@@ -56,6 +63,15 @@ class _HomeScreenState extends State<HomeScreen> {
       _sales = sales;
       _dayProfit = sales.fold(0, (s, x) => s + x.profit);
       _monthProfit = results[4] as double;
+      _pattarais = pattarais;
+      if (pattarais.isNotEmpty) {
+        // Always pick the active (or first) pattarai name — ensures the
+        // greeting updates immediately after saving a new name in Settings.
+        final active = pattarais.where((p) => p.isActive).toList();
+        _selectedPattaraiName = active.isNotEmpty ? active.first.name : pattarais.first.name;
+      } else {
+        _selectedPattaraiName = null;
+      }
       _loading = false;
     });
   }
@@ -94,6 +110,7 @@ class _HomeScreenState extends State<HomeScreen> {
         date: _date,
         products: _products,
         buyers: _buyers,
+        pattaraiName: _selectedPattaraiName,
         onSaved: _reloadSales,
       ),
     );
@@ -339,6 +356,13 @@ class _HomeScreenState extends State<HomeScreen> {
                 .then((_) => _loadAll());
           }),
 
+          _sideItem(Icons.settings_outlined, 'Settings', () {
+            Navigator.pop(context);
+            Navigator.push(context,
+                    MaterialPageRoute(builder: (_) => const SettingsScreen()))
+                .then((_) => _loadAll());
+          }),
+
           const Spacer(),
           const Divider(height: 1, indent: 16, endIndent: 16),
 
@@ -382,6 +406,46 @@ class _HomeScreenState extends State<HomeScreen> {
   // ══════════════════════════════════════════════════════════════════════════════
   // HOME BODY
   // ══════════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════════
+  // PATTARAI TABS — display-only shop name tabs. Tapping one just sets which
+  // name gets tagged onto sales saved from here on; it never filters data.
+  // ══════════════════════════════════════════════════════════════════════════════
+  Widget _buildPattaraiTabs() {
+    return Container(
+      color: Colors.white,
+      padding: const EdgeInsets.only(bottom: 10),
+      child: SizedBox(
+        height: 36,
+        child: ListView.separated(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          itemCount: _pattarais.length,
+          separatorBuilder: (_, __) => const SizedBox(width: 8),
+          itemBuilder: (_, i) {
+            final p = _pattarais[i];
+            final selected = p.name == _selectedPattaraiName;
+            return GestureDetector(
+              onTap: () => setState(() => _selectedPattaraiName = p.name),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: selected ? const Color(0xFF1F4E79) : const Color(0xFFF5F6FA),
+                  borderRadius: BorderRadius.circular(18),
+                ),
+                child: Text(p.name,
+                    style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+                        color: selected ? Colors.white : const Color(0xFF555555))),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
   Widget _buildHome() {
     final fmt = NumberFormat('#,##0', 'en_IN');
     final user = _svc.currentUser;
@@ -422,7 +486,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(width: 10),
             Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Hello, ${user?.displayName?.split(' ').first ?? 'there'}!',
+              Text('Hello, ${_selectedPattaraiName ?? user?.displayName?.split(' ').first ?? 'there'}!',
                   style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -466,6 +530,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ]),
         ]),
       ),
+      // Pattarai tabs removed — shop name now shown only in greeting
       Expanded(
         child: _loading
             ? const Center(child: CircularProgressIndicator())
@@ -610,7 +675,8 @@ class _SaleCard extends StatelessWidget {
             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
         subtitle: Text(
             '${s.qty % 1 == 0 ? s.qty.toInt() : s.qty.toStringAsFixed(1)} ${s.displayUnit}'
-            '${s.buyerName != null ? '  •  ${s.buyerName}' : ''}',
+            '${s.buyerName != null ? '  •  ${s.buyerName}' : ''}'
+            '${s.pattaraiName != null ? '  •  ${s.pattaraiName}' : ''}',
             style: const TextStyle(fontSize: 12, color: Color(0xFF888888))),
         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
           Text('Rs ${fmt.format(s.profit)}',
@@ -634,17 +700,32 @@ class _SaleCard extends StatelessWidget {
 // ══════════════════════════════════════════════════════════════════════════════
 // ADD SALE SHEET - WITH PIECE PRODUCT SUPPORT, WORKER OVERRIDE, AND RAW MATERIAL CREDIT (RATE-BASED)
 // ══════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════════════
+// REPLACE the existing AddSaleSheet class (and _DropField) in home_screen.dart
+// with this updated version.
+//
+// CHANGES:
+//   • Product selection now shows a tappable tile grid with LIVE STOCK badge
+//     per material (SS stock for SS products, Brass for Brass, Copper for Copper)
+//   • Stock is loaded ONCE when the sheet opens — no extra taps needed
+//   • Selecting a product immediately highlights it and shows stock info inline
+//   • Everything else (worker override, price, buyer, save logic) unchanged
+// ══════════════════════════════════════════════════════════════════════════════
+
 class AddSaleSheet extends StatefulWidget {
   final DateTime date;
   final List<Product> products;
   final List<Buyer> buyers;
+  final String? pattaraiName;
   final VoidCallback onSaved;
-  const AddSaleSheet(
-      {super.key,
-      required this.date,
-      required this.products,
-      required this.buyers,
-      required this.onSaved});
+  const AddSaleSheet({
+    super.key,
+    required this.date,
+    required this.products,
+    required this.buyers,
+    this.pattaraiName,
+    required this.onSaved,
+  });
   @override
   State<AddSaleSheet> createState() => _AddSaleSheetState();
 }
@@ -654,7 +735,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
   Buyer? _buyer;
   final _qty = TextEditingController();
   final _priceCtrl = TextEditingController();
-  final _rawRateCtrl = TextEditingController(); // rate per kg
+  final _rawRateCtrl = TextEditingController();
   bool _customPrice = false;
   double _profit = 0, _effectivePrice = 0;
   bool _saving = false;
@@ -666,7 +747,10 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
   String _buyerStockText = '';
   RawMaterialType? _buyerMaterialType;
 
-  // Global stock info
+  // Global stock per material — loaded once on init
+  Map<RawMaterialType, double> _stockMap = {};
+  bool _stockLoaded = false;
+
   String _globalStockText = '';
   double _globalStockKg = 0;
   RawMaterialType? _globalMaterialType;
@@ -675,36 +759,42 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
   void initState() {
     super.initState();
     _loadWorkers();
+    _loadAllStock();
   }
 
   Future<void> _loadWorkers() async {
     _workers = await FirebaseService.instance.getWorkers();
-    setState(() {});
+    if (mounted) setState(() {});
   }
 
-  // Map product category to raw material type (for consumption)
-  RawMaterialType? _getMaterialTypeFromProduct(Product? p) {
-    if (p == null) return null;
-    final cat = p.category.toLowerCase();
-    if (cat.contains('ss')) return RawMaterialType.ssSheet;
-    if (cat.contains('brass')) return RawMaterialType.brassSheet;
-    if (cat.contains('copper')) return RawMaterialType.copperSheet;
-    return null;
-  }
-
-  // Convert sale quantity (pieces or kg) to kg for raw material deduction
-  double _getKgConsumed(Product p, double qty) {
-    if (p.soldByPiece) {
-      // qty is in pieces, each piece weighs p.productWeightG grams
-      return qty * (p.productWeightG / 1000.0);
-    } else {
-      // qty is already in kg
-      return qty;
+  /// Load SS, Brass, Copper stock in one call so product tiles can show badges.
+  Future<void> _loadAllStock() async {
+    final total = await FirebaseService.instance.getTotalStock();
+    if (mounted) {
+      setState(() {
+        _stockMap = total;
+        _stockLoaded = true;
+      });
     }
   }
 
-  // UPDATED: fetch available stock = global + buyer's stock (if buyer selected)
-  Future<void> _fetchGlobalStock(RawMaterialType? material) async {
+  RawMaterialType? _getMaterialTypeFromProduct(Product? p) {
+    if (p == null) return null;
+    final cat = p.category.toLowerCase();
+    // IMPORTANT: check 'brass' and 'copper' BEFORE 'ss'
+    // because 'brass'.contains('ss') == true and would wrongly return ssSheet
+    if (cat.contains('brass')) return RawMaterialType.brassSheet;
+    if (cat.contains('copper')) return RawMaterialType.copperSheet;
+    if (cat.contains('ss')) return RawMaterialType.ssSheet;
+    return null;
+  }
+
+  double _getKgConsumed(Product p, double qty) {
+    if (p.soldByPiece) return qty * (p.productWeightG / 1000.0);
+    return qty;
+  }
+
+  void _updateGlobalStockText(RawMaterialType? material) {
     if (material == null) {
       setState(() {
         _globalStockText = '';
@@ -713,17 +803,12 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       });
       return;
     }
-    final globalKg = await FirebaseService.instance.getCurrentStockForMaterial(material);
-    double totalKg = globalKg;
-    // If buyer selected, add buyer's stock
-    if (_buyer != null && _buyer!.id != null) {
-      final buyerStock = await FirebaseService.instance.getBuyerStock(_buyer!.id!, material);
-      totalKg += buyerStock;
-    }
+    final kg = _stockMap[material] ?? 0.0;
     setState(() {
-      _globalStockKg = totalKg;
+      _globalStockKg = kg;
       _globalMaterialType = material;
-      _globalStockText = 'Available ${material.displayName}: ${totalKg.toStringAsFixed(2)} kg';
+      _globalStockText =
+          'Total ${material.displayName} stock: ${kg.toStringAsFixed(2)} kg';
     });
   }
 
@@ -738,58 +823,58 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     final stock = await FirebaseService.instance.getPartyStock(b.id!);
     if (stock != null && stock.stock.isNotEmpty) {
       final productMaterial = _getMaterialTypeFromProduct(_product);
-      if (productMaterial != null && stock.stock.containsKey(productMaterial)) {
+      if (productMaterial != null &&
+          stock.stock.containsKey(productMaterial)) {
         final kg = stock.stock[productMaterial]!;
         setState(() {
           _buyerMaterialType = productMaterial;
-          _buyerStockText = 'Remaining ${productMaterial.displayName}: ${kg.toStringAsFixed(2)} kg';
+          _buyerStockText = kg >= 0
+              ? 'Buyer has ${productMaterial.displayName}: ${kg.toStringAsFixed(2)} kg'
+              : 'Buyer owes ${productMaterial.displayName}: ${(-kg).toStringAsFixed(2)} kg';
         });
       } else {
         final first = stock.stock.entries.first;
         setState(() {
           _buyerMaterialType = first.key;
-          _buyerStockText = 'Remaining ${first.key.displayName}: ${first.value.toStringAsFixed(2)} kg';
+          _buyerStockText = first.value >= 0
+              ? 'Buyer has ${first.key.displayName}: ${first.value.toStringAsFixed(2)} kg'
+              : 'Buyer owes ${first.key.displayName}: ${(-first.value).toStringAsFixed(2)} kg';
         });
       }
     } else {
       setState(() {
-        _buyerStockText = 'No raw material stock for this buyer.';
+        _buyerStockText = 'No raw material balance for this buyer.';
         _buyerMaterialType = null;
       });
     }
   }
 
-  void _selectProduct(Product? p) {
+  void _selectProduct(Product p) {
     final material = _getMaterialTypeFromProduct(p);
     setState(() {
       _product = p;
-      if (p != null) {
-        if (p.soldByPiece) {
-          final defaultPiecePrice = p.sellPricePerKg * (p.productWeightG / 1000.0);
-          _effectivePrice = defaultPiecePrice;
-          _priceCtrl.text = defaultPiecePrice.toStringAsFixed(2);
-        } else {
-          _effectivePrice = p.sellPricePerKg;
-          _priceCtrl.text = _effectivePrice.toStringAsFixed(0);
-        }
+      if (p.soldByPiece) {
+        final defaultPiecePrice =
+            p.sellPricePerKg * (p.productWeightG / 1000.0);
+        _effectivePrice = defaultPiecePrice;
+        _priceCtrl.text = defaultPiecePrice.toStringAsFixed(2);
       } else {
-        _effectivePrice = 0;
-        _priceCtrl.text = '';
+        _effectivePrice = p.sellPricePerKg;
+        _priceCtrl.text = _effectivePrice.toStringAsFixed(0);
       }
       _workerOverrides.clear();
       _overrideWorkers = false;
     });
     _recalc();
+    _updateGlobalStockText(material);
     if (_buyer != null) _fetchBuyerStock(_buyer);
-    _fetchGlobalStock(material);
   }
 
   void _onBuyerChanged(Buyer? b) {
     setState(() => _buyer = b);
     _fetchBuyerStock(b);
-    // Refresh global stock to include buyer's stock
     final material = _getMaterialTypeFromProduct(_product);
-    if (material != null) _fetchGlobalStock(material);
+    if (material != null) _updateGlobalStockText(material);
     _recalc();
   }
 
@@ -806,15 +891,14 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       _effectivePrice = customPrice;
       if (p.soldByPiece) {
         final costPerPiece = p.costPerKg * (p.productWeightG / 1000.0);
-        final profitPerPiece = customPrice - costPerPiece;
-        profit = qty * profitPerPiece;
+        profit = qty * (customPrice - costPerPiece);
       } else {
-        final profitPerKg = customPrice - p.costPerKg;
-        profit = qty * profitPerKg;
+        profit = qty * (customPrice - p.costPerKg);
       }
     } else {
       if (p.soldByPiece) {
-        final defaultPiecePrice = p.sellPricePerKg * (p.productWeightG / 1000.0);
+        final defaultPiecePrice =
+            p.sellPricePerKg * (p.productWeightG / 1000.0);
         _effectivePrice = defaultPiecePrice;
         final costPerPiece = p.costPerKg * (p.productWeightG / 1000.0);
         profit = qty * (defaultPiecePrice - costPerPiece);
@@ -826,7 +910,6 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     setState(() => _profit = profit);
   }
 
-  // Get final worker rates with overrides (in kg or piece basis)
   Map<String, double> _getFinalWorkerRates() {
     if (_product == null) return {};
     final baseRates = Map<String, double>.from(_product!.workerRatesPerKg);
@@ -845,19 +928,17 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     return finalRates;
   }
 
-  // Helper to compute total credit to buyer (sale revenue + raw material value)
   double _getTotalBuyerCredit() {
     if (_product == null || _buyer == null) return 0;
     final qty = double.tryParse(_qty.text) ?? 0;
     final revenue = qty * _effectivePrice;
-    // Compute raw material amount from rate and quantity in kg
-    final qtyKg = _product!.soldByPiece ? qty * (_product!.productWeightG / 1000.0) : qty;
+    final qtyKg = _product!.soldByPiece
+        ? qty * (_product!.productWeightG / 1000.0)
+        : qty;
     final rate = double.tryParse(_rawRateCtrl.text) ?? 0.0;
-    final rawMat = qtyKg * rate;
-    return revenue + rawMat;
+    return revenue + qtyKg * rate;
   }
 
-  // UPDATED: Save sale with stock deduction and credit linking
   Future<void> _save() async {
     if (_product == null || _qty.text.isEmpty) return;
     final qty = double.tryParse(_qty.text) ?? 0;
@@ -868,76 +949,61 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     }
 
     final isPieceProduct = _product!.soldByPiece;
-
-    // Determine total kg needed
     final totalKgNeeded = _getKgConsumed(_product!, qty);
 
     String? globalConsumptionTxId;
     String? buyerDeductionMaterialType;
     double? buyerDeductionKg;
+    double companyConsumedKg = 0;
     RawMaterialType? globalMaterial;
 
-    // Only kg products affect inventory; piece products do not consume stock
     if (!isPieceProduct) {
       globalMaterial = _getMaterialTypeFromProduct(_product);
       if (globalMaterial == null) {
         ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Unknown material type for this product.')));
+            const SnackBar(
+                content: Text('Unknown material type for this product.')));
         return;
       }
 
       double remainingKg = totalKgNeeded;
 
-      // Deduct from buyer's stock first if buyer is selected
       if (_buyer != null && _buyer!.id != null) {
-        final buyerStock = await FirebaseService.instance.getBuyerStock(_buyer!.id!, globalMaterial);
-        if (buyerStock > 0) {
-          final deductFromBuyer = buyerStock >= remainingKg ? remainingKg : buyerStock;
-          if (deductFromBuyer > 0) {
-            // Deduct from buyer's stock
-            await FirebaseService.instance.updatePartyStock(
-              _buyer!.id!,
-              _buyer!.name,
-              'buyer',
-              globalMaterial,
-              -deductFromBuyer,
-            );
-            buyerDeductionKg = deductFromBuyer;
-            buyerDeductionMaterialType = globalMaterial.displayName;
-            remainingKg -= deductFromBuyer;
-          }
-        }
+        final buyerStock = await FirebaseService.instance
+            .getBuyerStock(_buyer!.id!, globalMaterial);
+        final coveredByBuyer = buyerStock > 0
+            ? (buyerStock >= remainingKg ? remainingKg : buyerStock)
+            : 0.0;
+
+        await FirebaseService.instance.updatePartyStock(
+          _buyer!.id!,
+          _buyer!.name,
+          'buyer',
+          globalMaterial,
+          -remainingKg,
+        );
+        buyerDeductionKg = remainingKg;
+        buyerDeductionMaterialType = globalMaterial.displayName;
+        remainingKg -= coveredByBuyer;
       }
 
-      // 2. Check total available (global + buyer's stock already deducted)
-      // but we need to check if remainingKg can be covered by global stock
-      final globalStock = await FirebaseService.instance.getCurrentStockForMaterial(globalMaterial);
       if (remainingKg > 0) {
-        // Check global stock availability for the remainder
-        if (globalStock < remainingKg) {
-          // Compute total available (global + buyer's original stock, but buyer's stock already used)
-          // We show a combined error
-          final totalAvailable = globalStock + (buyerDeductionKg ?? 0);
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('Insufficient stock! Only ${totalAvailable.toStringAsFixed(2)} kg available.'),
-              backgroundColor: Colors.red));
-          return;
-        }
-
-        // Create global consumption transaction (negative kg)
+        companyConsumedKg = remainingKg;
         final consumptionTx = RawMaterialTransaction(
           materialType: globalMaterial,
           date: widget.date,
-          quantityKg: -remainingKg,
+          quantityKg: remainingKg,
           ratePerKg: 0,
           transactionType: 'consumption',
-          supplierId: null, // null means global stock
+          supplierId: null,
           supplierName: null,
           isCredit: false,
           creditAmount: 0,
-          note: 'Consumed for sale: ${_product!.name} (${remainingKg} kg)',
+          note:
+              'Consumed for sale: ${_product!.name} (${remainingKg.toStringAsFixed(2)} kg)',
         );
-        globalConsumptionTxId = await FirebaseService.instance.addRawMaterialTransaction(consumptionTx);
+        globalConsumptionTxId = await FirebaseService.instance
+            .addRawMaterialTransaction(consumptionTx);
       }
     }
 
@@ -957,19 +1023,20 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       workerRatesPerKg: finalWorkerRates,
       soldByPiece: _product!.soldByPiece,
       unit: _product!.soldByPiece ? 'pcs' : 'kg',
-      // link tracking data
       consumptionTxId: globalConsumptionTxId,
       consumedMaterialType: globalMaterial?.displayName,
-      consumedKg: globalConsumptionTxId != null ? totalKgNeeded - (buyerDeductionKg ?? 0) : null,
+      consumedKg: globalConsumptionTxId != null ? companyConsumedKg : null,
       buyerDeductionKg: buyerDeductionKg,
       buyerDeductionMaterialType: buyerDeductionMaterialType,
       rawMaterialCreditId: null,
+      pattaraiName: widget.pattaraiName,
     );
 
     final saleId = await FirebaseService.instance.addSale(sale);
 
-    // Credit buyer for raw material supplied (if any)
-    final qtyKg = _product!.soldByPiece ? qty * (_product!.productWeightG / 1000.0) : qty;
+    final qtyKg = _product!.soldByPiece
+        ? qty * (_product!.productWeightG / 1000.0)
+        : qty;
     final rate = double.tryParse(_rawRateCtrl.text) ?? 0.0;
     final rawMat = qtyKg * rate;
     if (_buyer != null && rawMat > 0) {
@@ -978,15 +1045,266 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
         buyerName: _buyer!.name,
         type: SimpleTxType.credit,
         amount: rawMat,
-        note: 'Raw material supplied for sale: ${_product!.name} (${qtyKg.toStringAsFixed(2)} kg @ ₹${rate.toStringAsFixed(2)})',
+        note:
+            'Raw material supplied for sale: ${_product!.name} (${qtyKg.toStringAsFixed(2)} kg @ ₹${rate.toStringAsFixed(2)})',
         dateTime: widget.date,
       );
-      final creditTxId = await FirebaseService.instance.addSimpleTransaction(tx);
-      await FirebaseService.instance.updateSaleRawMaterialCredit(saleId, creditTxId);
+      final creditTxId =
+          await FirebaseService.instance.addSimpleTransaction(tx);
+      await FirebaseService.instance
+          .updateSaleRawMaterialCredit(saleId, creditTxId);
     }
 
     widget.onSaved();
     if (mounted) Navigator.pop(context);
+  }
+
+  // ── Stock badge color ───────────────────────────────────────────────────────
+  Color _stockColor(double kg) {
+    if (kg < 0) return Colors.red;
+    if (kg < 10) return Colors.orange;
+    return const Color(0xFF1A6B2A);
+  }
+
+  // ── Build product tile grid ─────────────────────────────────────────────────
+  Widget _buildProductGrid() {
+    // Group products by category
+    final Map<String, List<Product>> grouped = {};
+    for (final p in widget.products) {
+      grouped.putIfAbsent(p.category, () => []).add(p);
+    }
+
+    // Category order: SS first, then Brass, then Copper, then others
+    final order = ['SS', 'Brass', 'Copper'];
+    final categories = [
+      ...order.where(grouped.containsKey),
+      ...grouped.keys.where((k) => !order.contains(k)),
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: categories.map((cat) {
+        final products = grouped[cat]!;
+        // Get stock for this category's material
+        final sampleMaterial =
+            _getMaterialTypeFromProduct(products.first);
+        final stockKg = sampleMaterial != null
+            ? (_stockMap[sampleMaterial] ?? 0.0)
+            : null;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Category header with stock badge
+            Padding(
+              padding: const EdgeInsets.only(top: 12, bottom: 6),
+              child: Row(children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: cat == 'SS'
+                        ? const Color(0xFFE6F1FB)
+                        : cat == 'Brass'
+                            ? const Color(0xFFFAEEDA)
+                            : const Color(0xFFE8F5E9),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    cat,
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 12,
+                      color: cat == 'SS'
+                          ? const Color(0xFF1F4E79)
+                          : cat == 'Brass'
+                              ? const Color(0xFF7B4F06)
+                              : const Color(0xFF2E7D32),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Stock badge for category
+                if (stockKg != null && _stockLoaded)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: _stockColor(stockKg).withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: _stockColor(stockKg).withOpacity(0.3)),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      Icon(Icons.inventory_2_outlined,
+                          size: 11, color: _stockColor(stockKg)),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Stock: ${stockKg.toStringAsFixed(1)} kg',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: _stockColor(stockKg),
+                        ),
+                      ),
+                    ]),
+                  )
+                else if (!_stockLoaded)
+                  const SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(strokeWidth: 1.5)),
+              ]),
+            ),
+
+            // Product tiles
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: products
+                  .map((p) => _buildProductTile(p, stockKg))
+                  .toList(),
+            ),
+          ],
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildProductTile(Product p, double? stockKg) {
+    final isSelected = _product?.id == p.id;
+    final fmt = NumberFormat('#,##0', 'en_IN');
+    final priceLabel = p.soldByPiece
+        ? 'Rs ${fmt.format(p.sellPricePerKg * (p.productWeightG / 1000.0))}/pc'
+        : 'Rs ${fmt.format(p.sellPricePerKg)}/kg';
+    final cat = p.category;
+
+    return GestureDetector(
+      onTap: () => _selectProduct(p),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        width: 110,
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? (cat == 'SS'
+                  ? const Color(0xFF1F4E79)
+                  : cat == 'Brass'
+                      ? const Color(0xFF7B4F06)
+                      : const Color(0xFF2E7D32))
+              : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected
+                ? Colors.transparent
+                : cat == 'SS'
+                    ? const Color(0xFFBDD4ED)
+                    : cat == 'Brass'
+                        ? const Color(0xFFE5C99A)
+                        : const Color(0xFFA5D6A7),
+            width: 1.5,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                      color: (cat == 'SS'
+                              ? const Color(0xFF1F4E79)
+                              : cat == 'Brass'
+                                  ? const Color(0xFF7B4F06)
+                                  : const Color(0xFF2E7D32))
+                          .withOpacity(0.25),
+                      blurRadius: 8,
+                      offset: const Offset(0, 3))
+                ]
+              : [
+                  BoxShadow(
+                      color: Colors.black.withOpacity(0.04),
+                      blurRadius: 4,
+                      offset: const Offset(0, 2))
+                ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Product name
+            Text(
+              p.name,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: isSelected ? Colors.white : const Color(0xFF222222),
+              ),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            const SizedBox(height: 3),
+            // Price
+            Text(
+              priceLabel,
+              style: TextStyle(
+                fontSize: 10,
+                color: isSelected
+                    ? Colors.white.withOpacity(0.85)
+                    : const Color(0xFF1A6B2A),
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            // Piece weight
+            if (p.soldByPiece) ...[
+              const SizedBox(height: 2),
+              Text(
+                '${p.productWeightG}g/pc',
+                style: TextStyle(
+                  fontSize: 9,
+                  color: isSelected
+                      ? Colors.white.withOpacity(0.7)
+                      : const Color(0xFF888888),
+                ),
+              ),
+            ],
+            // Stock info — shown only for kg products
+            if (!p.soldByPiece && stockKg != null && _stockLoaded) ...[
+              const SizedBox(height: 6),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isSelected
+                      ? Colors.white.withOpacity(0.15)
+                      : _stockColor(stockKg).withOpacity(0.08),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      stockKg < 0
+                          ? Icons.warning_amber_rounded
+                          : Icons.inventory_2_outlined,
+                      size: 8,
+                      color: isSelected
+                          ? Colors.white.withOpacity(0.9)
+                          : _stockColor(stockKg),
+                    ),
+                    const SizedBox(width: 2),
+                    Text(
+                      '${stockKg.toStringAsFixed(1)} kg',
+                      style: TextStyle(
+                        fontSize: 9,
+                        fontWeight: FontWeight.w600,
+                        color: isSelected
+                            ? Colors.white.withOpacity(0.9)
+                            : _stockColor(stockKg),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 
   @override
@@ -1002,6 +1320,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       padding: EdgeInsets.fromLTRB(20, 6, 20, 20 + bottom),
       child: SingleChildScrollView(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
+          // Drag handle
           Container(
               width: 40,
               height: 4,
@@ -1009,31 +1328,35 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
               decoration: BoxDecoration(
                   color: Colors.grey.shade300,
                   borderRadius: BorderRadius.circular(2))),
+
           Row(children: [
             const Text('Add Sale',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                style:
+                    TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const Spacer(),
             Text(DateFormat('dd MMM yyyy').format(widget.date),
-                style: const TextStyle(fontSize: 13, color: Color(0xFF888888))),
+                style: const TextStyle(
+                    fontSize: 13, color: Color(0xFF888888))),
           ]),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
 
-          _DropField<Product>(
-            value: _product,
-            hint: 'Select product *',
-            items: widget.products,
-            label: (p) => '${p.category} — ${p.name} (${p.soldByPiece ? 'per piece' : 'per kg'})',
-            caption: (p) => p.soldByPiece
-                ? 'Rs ${fmt.format(p.sellPricePerKg * (p.productWeightG / 1000.0))}/pc'
-                : 'Rs ${fmt.format(p.sellPricePerKg)}/kg',
-            onChanged: _selectProduct,
+          // ── PRODUCT GRID (replaces old dropdown) ─────────────────────────
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text('Select Product',
+                style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey.shade700)),
           ),
-          const SizedBox(height: 10),
+          _buildProductGrid(),
 
-          if (_product != null)
+          // ── Selected product info bar ─────────────────────────────────────
+          if (_product != null) ...[
+            const SizedBox(height: 10),
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              margin: const EdgeInsets.only(bottom: 10),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               decoration: BoxDecoration(
                   color: const Color(0xFFF0F7FF),
                   borderRadius: BorderRadius.circular(8)),
@@ -1043,18 +1366,23 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
                 const SizedBox(width: 6),
                 Expanded(
                     child: Text(
-                      _product!.soldByPiece
-                          ? 'Weight per piece: ${_product!.productWeightG}g  •  '
-                              'Cost per piece: Rs ${fmt.format(_product!.costPerKg * (_product!.productWeightG / 1000.0))}  •  '
-                              'Profit per piece: Rs ${fmt.format(_product!.profitPerPiece)}'
-                          : 'Sell: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg  •  '
-                              'Cost: Rs ${fmt.format(_product!.costPerKg)}/kg  •  '
-                              'Profit: Rs ${fmt.format(_product!.profitPerUnit)}/${_product!.unit}',
-                        style: const TextStyle(
-                            fontSize: 11, color: Color(0xFF1F4E79)))),
+                  _product!.soldByPiece
+                      ? 'Weight: ${_product!.productWeightG}g/pc  •  '
+                          'Cost: Rs ${fmt.format(_product!.costPerKg * (_product!.productWeightG / 1000.0))}/pc  •  '
+                          'Profit: Rs ${fmt.format(_product!.profitPerPiece)}/pc'
+                      : 'Sell: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg  •  '
+                          'Cost: Rs ${fmt.format(_product!.costPerKg)}/kg  •  '
+                          'Profit: Rs ${fmt.format(_product!.profitPerUnit)}/kg',
+                  style: const TextStyle(
+                      fontSize: 11, color: Color(0xFF1F4E79)),
+                )),
               ]),
             ),
+          ],
 
+          const SizedBox(height: 10),
+
+          // ── Buyer dropdown ────────────────────────────────────────────────
           _DropField<Buyer?>(
             value: _buyer,
             hint: 'Select buyer (optional)',
@@ -1064,53 +1392,107 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
             onChanged: _onBuyerChanged,
           ),
 
-          // Display available stock (global + buyer's stock)
-          if (_globalStockText.isNotEmpty && _product != null && !_product!.soldByPiece)
+          // ── Stock info after buyer selected ───────────────────────────────
+          if (_globalStockText.isNotEmpty &&
+              _product != null &&
+              !_product!.soldByPiece)
             Padding(
-              padding: const EdgeInsets.only(top: 8, bottom: 8),
+              padding: const EdgeInsets.only(top: 8, bottom: 4),
               child: Container(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 8),
                 decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
+                  color: _globalStockKg < 0
+                      ? Colors.red.shade50
+                      : Colors.blue.shade50,
                   borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  _globalStockText,
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF1F4E79),
+                  border: Border.all(
+                    color: _globalStockKg < 0
+                        ? Colors.red.shade200
+                        : Colors.blue.shade100,
                   ),
                 ),
+                child: Row(children: [
+                  Icon(Icons.warehouse_outlined,
+                      size: 14,
+                      color: _globalStockKg < 0
+                          ? Colors.red
+                          : const Color(0xFF1F4E79)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _globalStockText,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: _globalStockKg < 0
+                            ? Colors.red.shade700
+                            : const Color(0xFF1F4E79),
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ]),
               ),
             ),
 
-          // Display buyer stock (only for kg products)
-          if (_buyerStockText.isNotEmpty && _product != null && !_product!.soldByPiece)
+          if (_buyerStockText.isNotEmpty &&
+              _buyer != null &&
+              _product != null &&
+              !_product!.soldByPiece)
             Padding(
               padding: const EdgeInsets.only(top: 4, bottom: 8),
               child: Container(
-                padding: const EdgeInsets.all(8),
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 10, vertical: 8),
                 decoration: BoxDecoration(
-                  color: _buyerStockText.contains('No')
-                      ? Colors.grey.shade100
-                      : Colors.green.shade50,
+                  color: _buyerStockText.contains('owes')
+                      ? Colors.orange.shade50
+                      : _buyerStockText.contains('No')
+                          ? Colors.grey.shade100
+                          : Colors.green.shade50,
                   borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(
-                  _buyerStockText,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: _buyerStockText.contains('No')
-                        ? Colors.grey.shade700
-                        : Colors.green.shade800,
+                  border: Border.all(
+                    color: _buyerStockText.contains('owes')
+                        ? Colors.orange.shade200
+                        : _buyerStockText.contains('No')
+                            ? Colors.grey.shade300
+                            : Colors.green.shade200,
                   ),
                 ),
+                child: Row(children: [
+                  Icon(
+                    _buyerStockText.contains('owes')
+                        ? Icons.person_off_outlined
+                        : Icons.person_outlined,
+                    size: 14,
+                    color: _buyerStockText.contains('owes')
+                        ? Colors.orange.shade700
+                        : _buyerStockText.contains('No')
+                            ? Colors.grey.shade600
+                            : Colors.green.shade700,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      _buyerStockText,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: _buyerStockText.contains('owes')
+                            ? Colors.orange.shade800
+                            : _buyerStockText.contains('No')
+                                ? Colors.grey.shade700
+                                : Colors.green.shade800,
+                      ),
+                    ),
+                  ),
+                ]),
               ),
             ),
 
           const SizedBox(height: 10),
 
-          // Worker Override Section (always works for any product type)
+          // ── Worker Override ───────────────────────────────────────────────
           if (_product != null &&
               _workers.isNotEmpty &&
               _product!.workerCostsPerProduct.isNotEmpty)
@@ -1124,10 +1506,13 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
               child: Column(children: [
                 SwitchListTile(
                   value: _overrideWorkers,
-                  onChanged: (v) => setState(() => _overrideWorkers = v),
+                  onChanged: (v) =>
+                      setState(() => _overrideWorkers = v),
                   title: const Text('Override Worker Assignment',
-                      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                  subtitle: const Text('Assign this sale to different workers',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w600, fontSize: 13)),
+                  subtitle: const Text(
+                      'Assign this sale to different workers',
                       style: TextStyle(fontSize: 11)),
                   activeColor: const Color(0xFF1F4E79),
                 ),
@@ -1135,96 +1520,144 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
                   Padding(
                     padding: const EdgeInsets.all(12),
                     child: Column(
-                      children: _product!.workerCostsPerProduct.entries.map((entry) {
+                      children: _product!.workerCostsPerProduct.entries
+                          .map((entry) {
                         final originalRole = entry.key;
                         final cost = entry.value;
                         final rateDisplay = _product!.soldByPiece
                             ? '₹${fmt.format(cost)}/piece'
                             : '₹${fmt.format(_product!.workerRatesPerKg[originalRole] ?? 0)}/kg';
-                        final currentOverride = _workerOverrides[originalRole];
+                        final currentOverride =
+                            _workerOverrides[originalRole];
                         final qty = double.tryParse(_qty.text) ?? 0;
                         double earnings = 0;
                         if (_product!.soldByPiece) {
                           earnings = cost * qty;
                         } else {
-                          final ratePerKg = _product!.workerRatesPerKg[originalRole] ?? 0;
+                          final ratePerKg =
+                              _product!.workerRatesPerKg[originalRole] ??
+                                  0;
                           earnings = ratePerKg * qty;
                         }
-
                         final availableWorkers = [
-                          {'role': originalRole, 'name': 'Original: $originalRole'},
-                          ..._workers.where((w) => w.role != originalRole).map((w) =>
-                              {'role': w.role, 'name': '${w.name} (${w.role})'}),
+                          {
+                            'role': originalRole,
+                            'name': 'Original: $originalRole'
+                          },
+                          ..._workers
+                              .where((w) => w.role != originalRole)
+                              .map((w) => {
+                                    'role': w.role,
+                                    'name': '${w.name} (${w.role})'
+                                  }),
                         ];
-
                         return Container(
                           margin: const EdgeInsets.only(bottom: 8),
                           padding: const EdgeInsets.all(10),
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: Colors.grey.shade200),
+                            border:
+                                Border.all(color: Colors.grey.shade200),
                           ),
                           child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(children: [
-                                Container(width: 8, height: 8,
-                                    decoration: BoxDecoration(color: const Color(0xFF1F4E79), shape: BoxShape.circle)),
-                                const SizedBox(width: 8),
-                                Text(originalRole, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-                                const Spacer(),
-                                Text(rateDisplay, style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
-                              ]),
-                              const SizedBox(height: 8),
-                              Row(children: [
-                                const Icon(Icons.arrow_forward, size: 14, color: Color(0xFF888888)),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: DropdownButtonFormField<String>(
-                                    value: currentOverride ?? originalRole,
-                                    decoration: InputDecoration(
-                                      isDense: true,
-                                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
-                                      filled: true,
-                                      fillColor: const Color(0xFFF5F6FA),
-                                    ),
-                                    items: availableWorkers.map((w) {
-                                      return DropdownMenuItem(
-                                        value: w['role'],
-                                        child: Row(children: [
-                                          if (w['role'] == originalRole)
-                                            const Icon(Icons.refresh, size: 14, color: Color(0xFF1F4E79)),
-                                          const SizedBox(width: 4),
-                                          Expanded(child: Text(w['name']!, style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis)),
-                                        ]),
-                                      );
-                                    }).toList(),
-                                    onChanged: (newRole) {
-                                      setState(() {
-                                        if (newRole != null) {
-                                          if (newRole == originalRole) {
-                                            _workerOverrides.remove(originalRole);
-                                          } else {
-                                            _workerOverrides[originalRole] = newRole;
+                              crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                              children: [
+                                Row(children: [
+                                  Container(
+                                      width: 8,
+                                      height: 8,
+                                      decoration: const BoxDecoration(
+                                          color: Color(0xFF1F4E79),
+                                          shape: BoxShape.circle)),
+                                  const SizedBox(width: 8),
+                                  Text(originalRole,
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                          fontSize: 13)),
+                                  const Spacer(),
+                                  Text(rateDisplay,
+                                      style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Color(0xFF888888))),
+                                ]),
+                                const SizedBox(height: 8),
+                                Row(children: [
+                                  const Icon(Icons.arrow_forward,
+                                      size: 14,
+                                      color: Color(0xFF888888)),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: DropdownButtonFormField<String>(
+                                      value:
+                                          currentOverride ?? originalRole,
+                                      decoration: InputDecoration(
+                                        isDense: true,
+                                        contentPadding:
+                                            const EdgeInsets.symmetric(
+                                                horizontal: 10,
+                                                vertical: 8),
+                                        border: OutlineInputBorder(
+                                            borderRadius:
+                                                BorderRadius.circular(8),
+                                            borderSide:
+                                                BorderSide.none),
+                                        filled: true,
+                                        fillColor:
+                                            const Color(0xFFF5F6FA),
+                                      ),
+                                      items: availableWorkers.map((w) {
+                                        return DropdownMenuItem(
+                                          value: w['role'],
+                                          child: Row(children: [
+                                            if (w['role'] == originalRole)
+                                              const Icon(Icons.refresh,
+                                                  size: 14,
+                                                  color:
+                                                      Color(0xFF1F4E79)),
+                                            const SizedBox(width: 4),
+                                            Expanded(
+                                                child: Text(w['name']!,
+                                                    style: const TextStyle(
+                                                        fontSize: 12),
+                                                    overflow: TextOverflow
+                                                        .ellipsis)),
+                                          ]),
+                                        );
+                                      }).toList(),
+                                      onChanged: (newRole) {
+                                        setState(() {
+                                          if (newRole != null) {
+                                            if (newRole == originalRole) {
+                                              _workerOverrides
+                                                  .remove(originalRole);
+                                            } else {
+                                              _workerOverrides[
+                                                  originalRole] = newRole;
+                                            }
                                           }
-                                        }
-                                      });
-                                    },
+                                        });
+                                      },
+                                    ),
                                   ),
-                                ),
+                                ]),
+                                if (qty > 0)
+                                  Padding(
+                                    padding:
+                                        const EdgeInsets.only(top: 6),
+                                    child: Text(
+                                        'Earns: ₹${fmt.format(earnings)}',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            color: earnings > 0
+                                                ? const Color(0xFF1A6B2A)
+                                                : const Color(0xFF888888),
+                                            fontWeight: earnings > 0
+                                                ? FontWeight.w500
+                                                : FontWeight.normal)),
+                                  ),
                               ]),
-                              if (qty > 0)
-                                Padding(
-                                  padding: const EdgeInsets.only(top: 6),
-                                  child: Text('Earns: ₹${fmt.format(earnings)}',
-                                      style: TextStyle(fontSize: 10,
-                                          color: earnings > 0 ? const Color(0xFF1A6B2A) : const Color(0xFF888888),
-                                          fontWeight: earnings > 0 ? FontWeight.w500 : FontWeight.normal)),
-                                ),
-                            ],
-                          ),
                         );
                       }).toList(),
                     ),
@@ -1232,17 +1665,30 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
               ]),
             ),
 
-          // Price override section
+          // ── Price override ────────────────────────────────────────────────
           if (_product != null)
             Row(children: [
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('Change sale price?', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
-                Text(_product!.soldByPiece
-                    ? 'Default: Rs ${(_product!.sellPricePerKg * (_product!.productWeightG / 1000.0)).toStringAsFixed(2)}/piece'
-                    : 'Default: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg',
-                    style: const TextStyle(fontSize: 11, color: Color(0xFF888888))),
-              ])),
-              Switch(value: _customPrice, onChanged: (v) { setState(() => _customPrice = v); _recalc(); }, activeColor: const Color(0xFF1F4E79)),
+              Expanded(
+                  child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                    const Text('Change sale price?',
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w500)),
+                    Text(
+                        _product!.soldByPiece
+                            ? 'Default: Rs ${(_product!.sellPricePerKg * (_product!.productWeightG / 1000.0)).toStringAsFixed(2)}/piece'
+                            : 'Default: Rs ${_product!.sellPricePerKg.toStringAsFixed(0)}/kg',
+                        style: const TextStyle(
+                            fontSize: 11, color: Color(0xFF888888))),
+                  ])),
+              Switch(
+                  value: _customPrice,
+                  onChanged: (v) {
+                    setState(() => _customPrice = v);
+                    _recalc();
+                  },
+                  activeColor: const Color(0xFF1F4E79)),
             ]),
 
           if (_customPrice && _product != null)
@@ -1250,73 +1696,95 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
               padding: const EdgeInsets.only(bottom: 10, top: 4),
               child: TextField(
                 controller: _priceCtrl,
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
                 decoration: InputDecoration(
-                  labelText: _product!.soldByPiece ? 'Sale price per piece (Rs)' : 'Sale price per kg (Rs)',
+                  labelText: _product!.soldByPiece
+                      ? 'Sale price per piece (Rs)'
+                      : 'Sale price per kg (Rs)',
                   prefixText: 'Rs ',
                   suffixText: _product!.soldByPiece ? '/pc' : '/kg',
                   filled: true,
                   fillColor: const Color(0xFFFFF8E1),
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                  border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                      borderSide: BorderSide.none),
                 ),
                 onChanged: (_) => _recalc(),
               ),
             ),
 
+          // ── Quantity ──────────────────────────────────────────────────────
           TextField(
             controller: _qty,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            keyboardType:
+                const TextInputType.numberWithOptions(decimal: true),
             decoration: InputDecoration(
-              labelText: 'Quantity (${_product?.unit ?? 'kg / pcs'})',
+              labelText:
+                  'Quantity (${_product?.unit ?? 'kg / pcs'})',
               suffixText: _product?.unit,
               filled: true,
               fillColor: const Color(0xFFF5F6FA),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide.none),
             ),
             onChanged: (_) => _recalc(),
           ),
           const SizedBox(height: 10),
 
-          // ── Raw Material Rate Field ──────────────────────────────────
+          // ── Raw material rate (buyer only) ────────────────────────────────
           if (_buyer != null)
             TextField(
               controller: _rawRateCtrl,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
                 labelText: 'Raw material rate (₹/kg) – optional',
                 hintText: 'e.g. 150',
                 filled: true,
                 fillColor: const Color(0xFFF5F6FA),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none),
                 prefixIcon: const Icon(Icons.warehouse),
               ),
               onChanged: (_) => setState(() {}),
             ),
 
-          // ── Profit display ──────────────────────────────────────────────
+          // ── Profit display ────────────────────────────────────────────────
           if (_profit != 0)
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 14),
               margin: const EdgeInsets.only(top: 8),
               decoration: BoxDecoration(
-                color: _profit >= 0 ? const Color(0xFFC6EFCE) : const Color(0xFFFFCCCC),
+                color: _profit >= 0
+                    ? const Color(0xFFC6EFCE)
+                    : const Color(0xFFFFCCCC),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Column(children: [
-                Text('Profit: Rs ${fmt.format(_profit)}',
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16,
-                        color: _profit >= 0 ? const Color(0xFF1A6B2A) : Colors.red),
+                Text(
+                    'Profit: Rs ${fmt.format(_profit)}',
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                        color: _profit >= 0
+                            ? const Color(0xFF1A6B2A)
+                            : Colors.red),
                     textAlign: TextAlign.center),
                 if (_customPrice)
-                  Text(_product!.soldByPiece
-                      ? '(Custom price: Rs ${fmt.format(_effectivePrice)}/piece)'
-                      : '(Custom price: Rs ${fmt.format(_effectivePrice)}/kg)',
-                      style: const TextStyle(fontSize: 11, color: Color(0xFF555555))),
+                  Text(
+                      _product!.soldByPiece
+                          ? '(Custom price: Rs ${fmt.format(_effectivePrice)}/piece)'
+                          : '(Custom price: Rs ${fmt.format(_effectivePrice)}/kg)',
+                      style: const TextStyle(
+                          fontSize: 11, color: Color(0xFF555555))),
               ]),
             ),
 
-          // ── Total Buyer Credit Summary ──────────────────────────────────
+          // ── Total buyer credit ────────────────────────────────────────────
           if (_buyer != null && totalCredit > 0)
             Container(
               margin: const EdgeInsets.only(top: 8, bottom: 8),
@@ -1331,8 +1799,10 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
                   const Text('Total Buyer Credit:',
                       style: TextStyle(fontWeight: FontWeight.bold)),
                   Text('₹ ${fmt.format(totalCredit)}',
-                      style: const TextStyle(fontWeight: FontWeight.bold,
-                          fontSize: 16, color: Color(0xFF1F4E79))),
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: Color(0xFF1F4E79))),
                 ],
               ),
             ),
@@ -1343,14 +1813,24 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
             width: double.infinity,
             height: 52,
             child: ElevatedButton(
-              onPressed: (_product == null || _qty.text.isEmpty || _saving) ? null : _save,
+              onPressed:
+                  (_product == null || _qty.text.isEmpty || _saving)
+                      ? null
+                      : _save,
               style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF1F4E79),
                   foregroundColor: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14))),
               child: _saving
-                  ? const SizedBox(width: 22, height: 22, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Text('Save Sale', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white))
+                  : const Text('Save Sale',
+                      style: TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.bold)),
             ),
           ),
         ]),
@@ -1359,6 +1839,7 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
   }
 }
 
+// ── _DropField (unchanged) ────────────────────────────────────────────────────
 class _DropField<T> extends StatelessWidget {
   final T? value;
   final String hint;
@@ -1367,13 +1848,14 @@ class _DropField<T> extends StatelessWidget {
   final String Function(T) caption;
   final ValueChanged<T?> onChanged;
 
-  const _DropField(
-      {required this.value,
-      required this.hint,
-      required this.items,
-      required this.label,
-      required this.caption,
-      required this.onChanged});
+  const _DropField({
+    required this.value,
+    required this.hint,
+    required this.items,
+    required this.label,
+    required this.caption,
+    required this.onChanged,
+  });
 
   @override
   Widget build(BuildContext context) => Container(
@@ -1399,7 +1881,8 @@ class _DropField<T> extends StatelessWidget {
                       if (caption(item).isNotEmpty)
                         Text(caption(item),
                             style: const TextStyle(
-                                fontSize: 11, color: Color(0xFF1A6B2A))),
+                                fontSize: 11,
+                                color: Color(0xFF1A6B2A))),
                     ]),
                   ))
               .toList(),

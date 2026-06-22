@@ -21,11 +21,36 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
   Map<String, double> _workerEarnings = {};
   Map<String, List<WorkerStatementItem>> _statementCache = {};
 
+  // ── Filter state (statement view) ────────────────────────────────────────
+  bool      _showFilter  = false;
+  String    _filterType  = 'all';   // 'all' | 'credit' | 'debit'
+  String    _searchQuery = '';
+  DateTime? _filterFrom;
+  DateTime? _filterTo;
+  final _searchCtrl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
     _selectedWorker = widget.worker;
     _calculateWorkerEarnings();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  void _resetFilter() {
+    setState(() {
+      _showFilter  = false;
+      _filterType  = 'all';
+      _searchQuery = '';
+      _filterFrom  = null;
+      _filterTo    = null;
+      _searchCtrl.clear();
+    });
   }
 
   Future<void> _calculateWorkerEarnings() async {
@@ -68,18 +93,31 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
             ? const Text('Worker Accounts')
             : Text('Statement - ${_selectedWorker!.name}'),
         actions: [
-          if (_selectedWorker != null)
+          if (_selectedWorker != null) ...[
             IconButton(
-              icon: const Icon(Icons.arrow_back),
-              tooltip: 'Back to all workers',
-              onPressed: () => setState(() => _selectedWorker = null),
+              icon: Icon(
+                Icons.filter_list,
+                color: (_filterType != 'all' || _filterFrom != null || _filterTo != null || _searchQuery.isNotEmpty)
+                    ? const Color(0xFFEF9F27)
+                    : null,
+              ),
+              tooltip: 'Filter',
+              onPressed: () => setState(() => _showFilter = !_showFilter),
             ),
-          if (_selectedWorker != null)
             IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Refresh',
               onPressed: () => _refreshStatement(_selectedWorker!.id!),
             ),
+            IconButton(
+              icon: const Icon(Icons.arrow_back),
+              tooltip: 'Back to all workers',
+              onPressed: () {
+                _resetFilter();
+                setState(() => _selectedWorker = null);
+              },
+            ),
+          ],
         ],
       ),
       body: _selectedWorker == null
@@ -176,6 +214,189 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
     );
   }
 
+  // ── FILTER HELPERS ──────────────────────────────────────────────────────────
+  List<WorkerStatementItem> _applyFilters(List<WorkerStatementItem> items) {
+    return items.where((item) {
+      if (_filterType == 'credit' && item.type != 'credit') return false;
+      if (_filterType == 'debit'  && item.type != 'debit')  return false;
+      if (_filterFrom != null && item.date.isBefore(_filterFrom!)) return false;
+      if (_filterTo   != null && item.date.isAfter(_filterTo!.add(const Duration(days: 1)))) return false;
+      if (_searchQuery.isNotEmpty) {
+        final q = _searchQuery.toLowerCase();
+        if (!item.description.toLowerCase().contains(q) &&
+            !_fmt.format(item.amount).contains(q)) return false;
+      }
+      return true;
+    }).toList();
+  }
+
+  bool get _hasActiveFilter =>
+      _filterType != 'all' || _filterFrom != null || _filterTo != null || _searchQuery.isNotEmpty;
+
+  Widget _buildFilterPanel() {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeInOut,
+      height: _showFilter ? null : 0,
+      child: _showFilter
+          ? Container(
+              color: const Color(0xFFF5F8FF),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                // Search bar
+                TextField(
+                  controller: _searchCtrl,
+                  onChanged: (v) => setState(() => _searchQuery = v),
+                  decoration: InputDecoration(
+                    hintText: 'Search description or amount…',
+                    prefixIcon: const Icon(Icons.search, size: 18),
+                    suffixIcon: _searchQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear, size: 16),
+                            onPressed: () {
+                              _searchCtrl.clear();
+                              setState(() => _searchQuery = '');
+                            })
+                        : null,
+                    filled: true,
+                    fillColor: Colors.white,
+                    isDense: true,
+                    border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Type filter chips
+                const Text('Type',
+                    style: TextStyle(
+                        fontSize: 11, fontWeight: FontWeight.bold,
+                        color: Color(0xFF555555))),
+                const SizedBox(height: 6),
+                Row(children: [
+                  _typeChip('All',      'all',    const Color(0xFF555555)),
+                  const SizedBox(width: 8),
+                  _typeChip('Earnings', 'credit', const Color(0xFF1F4E79)),
+                  const SizedBox(width: 8),
+                  _typeChip('Payments', 'debit',  const Color(0xFF1A6B2A)),
+                ]),
+                const SizedBox(height: 12),
+
+                // Date range row
+                const Text('Date range',
+                    style: TextStyle(
+                        fontSize: 11, fontWeight: FontWeight.bold,
+                        color: Color(0xFF555555))),
+                const SizedBox(height: 6),
+                Row(children: [
+                  Expanded(child: _datePicker(
+                    label: _filterFrom == null
+                        ? 'From'
+                        : DateFormat('dd MMM yy').format(_filterFrom!),
+                    icon: Icons.calendar_today,
+                    color: const Color(0xFF1F4E79),
+                    onTap: () async {
+                      final d = await showDatePicker(
+                        context: context,
+                        initialDate: _filterFrom ?? DateTime.now(),
+                        firstDate: DateTime(2020),
+                        lastDate: _filterTo ?? DateTime.now(),
+                      );
+                      if (d != null) setState(() => _filterFrom = d);
+                    },
+                    onClear: _filterFrom != null
+                        ? () => setState(() => _filterFrom = null) : null,
+                  )),
+                  const SizedBox(width: 8),
+                  Expanded(child: _datePicker(
+                    label: _filterTo == null
+                        ? 'To'
+                        : DateFormat('dd MMM yy').format(_filterTo!),
+                    icon: Icons.calendar_today,
+                    color: const Color(0xFF1F4E79),
+                    onTap: () async {
+                      final d = await showDatePicker(
+                        context: context,
+                        initialDate: _filterTo ?? DateTime.now(),
+                        firstDate: _filterFrom ?? DateTime(2020),
+                        lastDate: DateTime.now(),
+                      );
+                      if (d != null) setState(() => _filterTo = d);
+                    },
+                    onClear: _filterTo != null
+                        ? () => setState(() => _filterTo = null) : null,
+                  )),
+                ]),
+
+                // Clear all
+                if (_hasActiveFilter) ...[
+                  const SizedBox(height: 10),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton.icon(
+                      onPressed: _resetFilter,
+                      icon: const Icon(Icons.filter_list_off, size: 16),
+                      label: const Text('Clear all filters',
+                          style: TextStyle(fontSize: 12)),
+                      style: TextButton.styleFrom(
+                          foregroundColor: const Color(0xFFCC4444)),
+                    ),
+                  ),
+                ],
+              ]),
+            )
+          : const SizedBox.shrink(),
+    );
+  }
+
+  Widget _typeChip(String label, String value, Color color) => GestureDetector(
+    onTap: () => setState(() => _filterType = value),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: _filterType == value ? color : Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Text(label,
+          style: TextStyle(
+              fontSize: 12, fontWeight: FontWeight.w600,
+              color: _filterType == value ? Colors.white : color)),
+    ),
+  );
+
+  Widget _datePicker({
+    required String label,
+    required IconData icon,
+    required Color color,
+    required VoidCallback onTap,
+    VoidCallback? onClear,
+  }) =>
+      GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300),
+          ),
+          child: Row(children: [
+            Icon(icon, size: 14, color: color),
+            const SizedBox(width: 6),
+            Expanded(child: Text(label,
+                style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500))),
+            if (onClear != null)
+              GestureDetector(
+                onTap: onClear,
+                child: Icon(Icons.close, size: 14, color: Colors.grey.shade400)),
+          ]),
+        ),
+      );
+
   // ── SIMPLE WORKER STATEMENT VIEW like PhonePe ─────────────────────────────
   Widget _buildWorkerStatementView(Worker worker) {
     final cachedItems = _statementCache[worker.id!];
@@ -185,23 +406,29 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
     }
     
     final statementItems = cachedItems;
+    final filteredItems  = _applyFilters(statementItems);
     
+    // Calculate totals from ALL items (unfiltered)
     double totalCredit = 0;
-    double totalDebit = 0;
-    
+    double totalDebit  = 0;
     for (final item in statementItems) {
-      if (item.type == 'credit') {
-        totalCredit += item.amount;
-      } else {
-        totalDebit += item.amount;
-      }
+      if (item.type == 'credit') totalCredit += item.amount;
+      else totalDebit += item.amount;
     }
-    
+
+    // Filtered totals for the banner
+    double filteredCredit = 0;
+    double filteredDebit  = 0;
+    for (final item in filteredItems) {
+      if (item.type == 'credit') filteredCredit += item.amount;
+      else filteredDebit += item.amount;
+    }
+
     final pending = totalCredit - totalDebit;
     
-    // Group by date
+    // Group FILTERED items by date
     final Map<String, List<WorkerStatementItem>> groupedByDate = {};
-    for (final item in statementItems) {
+    for (final item in filteredItems) {
       final dateKey = DateFormat('dd/MM/yyyy').format(item.date);
       if (!groupedByDate.containsKey(dateKey)) {
         groupedByDate[dateKey] = [];
@@ -221,17 +448,56 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen> {
       });
     
     return Column(children: [
-      // Balance Card
+      // Balance Card (always shows full totals)
       _WorkerBalanceCard(
         totalCredit: totalCredit,
         totalDebit: totalDebit,
         pending: pending,
         fmt: _fmt,
       ),
-      
+
+      // Filter panel (collapsible)
+      _buildFilterPanel(),
+
+      // Filtered result summary banner
+      if (_hasActiveFilter)
+        Container(
+          color: const Color(0xFFFFF8E1),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(children: [
+            const Icon(Icons.filter_alt, size: 14, color: Color(0xFFEF9F27)),
+            const SizedBox(width: 6),
+            Expanded(child: Text(
+              '${filteredItems.length} result${filteredItems.length == 1 ? '' : 's'}  •  '
+              'Earned ₹${_fmt.format(filteredCredit)}  |  Paid ₹${_fmt.format(filteredDebit)}',
+              style: const TextStyle(fontSize: 12, color: Color(0xFF7B4F06)),
+            )),
+            GestureDetector(
+              onTap: _resetFilter,
+              child: const Icon(Icons.close, size: 16, color: Color(0xFF7B4F06)),
+            ),
+          ]),
+        ),
+
       Expanded(
-        child: statementItems.isEmpty
-            ? _emptyStatement()
+        child: filteredItems.isEmpty
+            ? Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Icon(Icons.search_off, size: 48, color: Colors.grey.shade300),
+                const SizedBox(height: 12),
+                Text(
+                  _hasActiveFilter
+                      ? 'No transactions match the filter'
+                      : 'No transactions yet',
+                  style: TextStyle(fontSize: 15, color: Colors.grey.shade400,
+                      fontWeight: FontWeight.w600)),
+                if (_hasActiveFilter) ...[
+                  const SizedBox(height: 8),
+                  TextButton(
+                    onPressed: _resetFilter,
+                    child: const Text('Clear filters'),
+                  ),
+                ],
+              ]))
             : ListView.builder(
                 padding: const EdgeInsets.all(12),
                 itemCount: sortedDates.length,

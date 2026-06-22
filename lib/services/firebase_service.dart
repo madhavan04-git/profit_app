@@ -160,6 +160,20 @@ class FirebaseService {
     return list;
   }
 
+  // Inclusive date-range query, used by the Filter tab. Both [start] and
+  // [end] are calendar dates (time-of-day is ignored).
+  Future<List<Sale>> salesForDateRange(DateTime start, DateTime end) async {
+    final startStr = start.toIso8601String().substring(0, 10);
+    final endStr = end.toIso8601String().substring(0, 10);
+    final q = await _col('sales')
+        .where('date', isGreaterThanOrEqualTo: startStr)
+        .where('date', isLessThanOrEqualTo: endStr)
+        .get();
+    final list = q.docs.map((d) => Sale.fromMap(d.id, d.data())).toList();
+    list.sort((a, b) => a.date.compareTo(b.date));
+    return list;
+  }
+
   Future<double> monthlyTotalProfit(int year, int month) async {
     final sales = await salesForMonth(year, month);
     return sales.fold<double>(0.0, (sum, s) => sum + s.profit);
@@ -308,15 +322,21 @@ class FirebaseService {
       _col('rawMaterialTransactions').orderBy('timestamp', descending: true).snapshots()
           .map((s) => s.docs.map((d) => RawMaterialTransaction.fromMap(d.id, d.data())).toList());
 
-  Future<String> addRawMaterialTransaction(RawMaterialTransaction tx) async {
+  // NOTE: [partyType] should be passed explicitly by the caller as 'buyer' or
+  // 'supplier' — the caller already knows this from the dropdown selection
+  // they showed the user. We no longer try to *guess* the type from the ID
+  // string (buyer/supplier IDs are normal Firestore auto-IDs and never carry
+  // a 'buyer_' prefix, so that old guess was always wrong in practice and
+  // every party purchase was being mis-recorded as a 'supplier').
+  Future<String> addRawMaterialTransaction(RawMaterialTransaction tx, {String? partyType}) async {
     final ref = await _col('rawMaterialTransactions').add(tx.toMap());
     // If supplierId is not null, update party stock (buyer or supplier)
     if (tx.supplierId != null && tx.transactionType == 'purchase') {
-      final partyType = tx.supplierId!.startsWith('buyer_') ? 'buyer' : 'supplier';
+      final resolvedType = partyType ?? 'supplier';
       await updatePartyStock(
         tx.supplierId!,
         tx.supplierName ?? '',
-        partyType,
+        resolvedType,
         tx.materialType,
         tx.quantityKg, // positive for purchase
       );
@@ -345,15 +365,35 @@ class FirebaseService {
     return total;
   }
 
-  // Get GLOBAL stock: sum transactions where supplierId == null
+  // Get GLOBAL stock: sum transactions where supplierId == null.
+  //
+  // Transaction storage conventions:
+  //   purchase     → quantityKg is POSITIVE  (adds to stock)
+  //   consumption  → quantityKg is NEGATIVE  (already the right sign, stored
+  //                  as -remainingKg in _save()). We just add it directly.
+  //   sale         → quantityKg is POSITIVE  (we subtract it here)
+  //
+  // Rule: for 'purchase' add the value; for everything else subtract it.
+  // But because consumption is already stored with a negative sign, we must
+  // NOT double-negate it — so we detect 'consumption' explicitly and add it
+  // directly (i.e. add a negative number = subtract).
   Future<Map<RawMaterialType, double>> getCurrentStock() async {
     final q = await _col('rawMaterialTransactions').get();
     Map<RawMaterialType, double> stock = {};
     for (var doc in q.docs) {
       final tx = RawMaterialTransaction.fromMap(doc.id, doc.data());
-      // Only count transactions that are not linked to a party (global)
+      // Only count transactions that are not linked to a party (global/company)
       if (tx.supplierId == null) {
-        final delta = tx.transactionType == 'purchase' ? tx.quantityKg : -tx.quantityKg;
+        double delta;
+        if (tx.transactionType == 'purchase') {
+          delta = tx.quantityKg.abs(); // always positive
+        } else if (tx.transactionType == 'consumption') {
+          // quantityKg stored as negative — use as-is so it subtracts
+          delta = -tx.quantityKg.abs(); // always negative
+        } else {
+          // 'sale' or any other type — subtract
+          delta = -tx.quantityKg.abs();
+        }
         stock[tx.materialType] = (stock[tx.materialType] ?? 0) + delta;
       }
     }
@@ -368,6 +408,12 @@ class FirebaseService {
   }
 
   // PARTY STOCK (for buyers/suppliers)
+  // IMPORTANT: balances are allowed to go negative (negative = buyer owes
+  // sheet / company over-issued). We must NOT remove the entry just because
+  // it hits zero or goes negative, otherwise the debt record is lost and the
+  // next sale silently treats this party as having a fresh 0 balance.
+  // We only drop the key if it becomes *exactly* 0 to keep documents tidy;
+  // any non-zero value (positive OR negative) is always stored.
   Future<void> updatePartyStock(String partyId, String partyName, String partyType,
       RawMaterialType material, double changeKg) async {
     final docRef = _col('partyStock').doc(partyId);
@@ -378,7 +424,9 @@ class FirebaseService {
       currentStock = p.stock;
     }
     final newQty = (currentStock[material] ?? 0) + changeKg;
-    if (newQty <= 0) {
+    // Use a tiny epsilon so floating point noise doesn't leave a stray
+    // 0.0000001 entry around forever, but real negative balances persist.
+    if (newQty.abs() < 0.0001) {
       currentStock.remove(material);
     } else {
       currentStock[material] = newQty;
@@ -445,21 +493,88 @@ class FirebaseService {
     return stock[material] ?? 0.0;
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // PATTARAI (shop / label name — display only)
+  // ══════════════════════════════════════════════════════════════════════════
+  Stream<List<Pattarai>> pattaraisStream() => _col('pattarais').snapshots().map((s) {
+    final list = s.docs.map((d) => Pattarai.fromMap(d.id, d.data())).toList();
+    list.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    return list;
+  });
+
+  Future<List<Pattarai>> getPattarais() async {
+    final q = await _col('pattarais').get();
+    final list = q.docs.map((d) => Pattarai.fromMap(d.id, d.data())).toList();
+    list.sort((a, b) => a.sortOrder.compareTo(b.sortOrder));
+    return list;
+  }
+
+  Future<void> savePattarai(Pattarai p) async {
+    if (p.id == null) {
+      final existing = await getPattarais();
+      final isFirst = existing.isEmpty;
+      await _col('pattarais').add(Pattarai(
+        name: p.name,
+        isActive: isFirst, // first one added becomes active automatically
+        sortOrder: existing.length,
+      ).toMap());
+    } else {
+      await _col('pattarais').doc(p.id).set(p.toMap());
+    }
+  }
+
+  Future<void> deletePattarai(String id) => _col('pattarais').doc(id).delete();
+
+  // Marks [id] as the active Pattarai and unsets all others.
+  Future<void> setActivePattarai(String id) async {
+    final all = await getPattarais();
+    for (final p in all) {
+      if (p.id == null) continue;
+      final shouldBeActive = p.id == id;
+      if (p.isActive != shouldBeActive) {
+        await _col('pattarais').doc(p.id).update({'isActive': shouldBeActive});
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // APP SETTINGS (single document: settings/app)
+  // ══════════════════════════════════════════════════════════════════════════
+  Future<AppSettings> getAppSettings() async {
+    final doc = await _col('settings').doc('app').get();
+    if (doc.exists) return AppSettings.fromMap(doc.data()!);
+    return const AppSettings();
+  }
+
+  Future<void> saveAppSettings(AppSettings settings) =>
+      _col('settings').doc('app').set(settings.toMap());
+
   // Inside FirebaseService class
 
-// Get total stock = global stock + all party stocks
+// Get total stock = global (company) stock + all party stocks.
+//
+// IMPORTANT BUSINESS RULE: a party's balance going negative just means that
+// party "owes" sheet — the shortfall has already been pulled out of company
+// stock at the time of sale, so a negative party balance must NOT be
+// subtracted again here. Only POSITIVE party balances add to the displayed
+// total; negative ones are ignored for this total (but are still visible to
+// the user on the Parties tab as a debt indicator). The company/global
+// stock itself IS allowed to go negative and is shown as-is.
 Future<Map<RawMaterialType, double>> getTotalStock() async {
-  // 1. Get global stock
+  // 1. Get global (company) stock — can be negative, shown as-is.
   final global = await getCurrentStock();
 
-  // 2. Get all party stocks
+  // 2. Get all party stocks, but only add the POSITIVE portion of each.
   final partyDocs = await _col('partyStock').get();
   final Map<RawMaterialType, double> total = Map.from(global);
 
   for (var doc in partyDocs.docs) {
     final party = PartyStock.fromMap(doc.id, doc.data());
     for (var entry in party.stock.entries) {
-      total[entry.key] = (total[entry.key] ?? 0) + entry.value;
+      if (entry.value > 0) {
+        total[entry.key] = (total[entry.key] ?? 0) + entry.value;
+      }
+      // entry.value <= 0 (party owes sheet) is intentionally skipped here.
     }
   }
   return total;
@@ -488,6 +603,76 @@ Future<Map<RawMaterialType, double>> getTotalStock() async {
       }
     }
     return result;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // RANGE FILTER SUMMARY (for Monthly screen → Filter tab)
+  // ══════════════════════════════════════════════════════════════════════════
+  //
+  // Lets the user pick any start/end date and optionally narrow down by
+  // buyer and/or material category (SS / Brass / Copper). Returns one
+  // RangeSummary with totals, per-category breakdown, per-buyer breakdown,
+  // and a day-by-day map (for the chart).
+  Future<RangeSummary> rangeSummary({
+    required DateTime start,
+    required DateTime end,
+    String? buyerId,
+    String? category, // 'SS' | 'Brass' | 'Copper' | null for all
+  }) async {
+    final allSales = await salesForDateRange(start, end);
+
+    final sales = allSales.where((s) {
+      if (buyerId != null && buyerId.isNotEmpty && s.buyerId != buyerId) return false;
+      if (category != null && category.isNotEmpty && s.productCategory != category) return false;
+      return true;
+    }).toList();
+
+    double totalProfit = 0, totalRevenue = 0, totalKg = 0;
+    final Map<String, double> profitByCategory = {};
+    final Map<String, double> kgByCategory = {};
+    final Map<String, double> revenueByCategory = {};
+    final Map<String, RangeBuyerStat> byBuyer = {};
+    final Map<String, double> dailyProfitMap = {};
+    final Map<String, double> dailyKgMap = {};
+
+    for (final s in sales) {
+      totalProfit += s.profit;
+      totalRevenue += s.qty * s.salePrice;
+      totalKg += s.qty;
+
+      final cat = s.productCategory;
+      profitByCategory[cat] = (profitByCategory[cat] ?? 0) + s.profit;
+      kgByCategory[cat] = (kgByCategory[cat] ?? 0) + s.qty;
+      revenueByCategory[cat] = (revenueByCategory[cat] ?? 0) + (s.qty * s.salePrice);
+
+      if (s.buyerId != null && s.buyerId!.isNotEmpty) {
+        byBuyer.putIfAbsent(s.buyerId!,
+            () => RangeBuyerStat(buyerId: s.buyerId!, buyerName: s.buyerName ?? 'Unknown'));
+        byBuyer[s.buyerId!]!.add(s);
+      }
+
+      final dk = s.date.toIso8601String().substring(0, 10);
+      dailyProfitMap[dk] = (dailyProfitMap[dk] ?? 0) + s.profit;
+      dailyKgMap[dk] = (dailyKgMap[dk] ?? 0) + s.qty;
+    }
+
+    final buyerList = byBuyer.values.toList()
+      ..sort((a, b) => b.totalProfit.compareTo(a.totalProfit));
+
+    return RangeSummary(
+      start: start,
+      end: end,
+      sales: sales,
+      totalProfit: totalProfit,
+      totalRevenue: totalRevenue,
+      totalKg: totalKg,
+      profitByCategory: profitByCategory,
+      kgByCategory: kgByCategory,
+      revenueByCategory: revenueByCategory,
+      buyerList: buyerList,
+      dailyProfitMap: dailyProfitMap,
+      dailyKgMap: dailyKgMap,
+    );
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -630,6 +815,53 @@ class BuyerMonthSummary {
     totalRevenue += s.qty * s.salePrice;
     totalProfit += s.profit;
   }
+}
+
+// Same shape as BuyerMonthSummary, used by the date-range Filter tab.
+class RangeBuyerStat {
+  final String buyerId, buyerName;
+  int salesCount = 0;
+  double totalKg = 0, totalRevenue = 0, totalProfit = 0;
+  RangeBuyerStat({required this.buyerId, required this.buyerName});
+  void add(Sale s) {
+    salesCount++;
+    totalKg += s.qty;
+    totalRevenue += s.qty * s.salePrice;
+    totalProfit += s.profit;
+  }
+}
+
+// Result of FirebaseService.rangeSummary() — everything the Filter tab needs.
+class RangeSummary {
+  final DateTime start, end;
+  final List<Sale> sales;
+  final double totalProfit, totalRevenue, totalKg;
+  final Map<String, double> profitByCategory;
+  final Map<String, double> kgByCategory;
+  final Map<String, double> revenueByCategory;
+  final List<RangeBuyerStat> buyerList;
+  final Map<String, double> dailyProfitMap;
+  final Map<String, double> dailyKgMap;
+
+  const RangeSummary({
+    required this.start,
+    required this.end,
+    required this.sales,
+    required this.totalProfit,
+    required this.totalRevenue,
+    required this.totalKg,
+    required this.profitByCategory,
+    required this.kgByCategory,
+    required this.revenueByCategory,
+    required this.buyerList,
+    required this.dailyProfitMap,
+    required this.dailyKgMap,
+  });
+
+  int get daysInRange => end.difference(start).inDays + 1;
+  double get avgProfitPerDay => daysInRange > 0 ? totalProfit / daysInRange : 0;
+  double get avgKgPerDay => daysInRange > 0 ? totalKg / daysInRange : 0;
+  int get salesCount => sales.length;
 }
 
 class WorkerAutoWage {

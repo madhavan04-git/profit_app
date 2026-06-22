@@ -199,6 +199,10 @@ class Sale {
   final double? buyerDeductionKg;          // kg deducted from buyer's stock
   final String? buyerDeductionMaterialType; // material type deducted from buyer
 
+  // NEW: which Pattarai (shop/label) this sale was recorded under — purely a
+  // display label, does not affect stock or profit calculations.
+  final String? pattaraiName;
+
   const Sale({
     this.id,
     required this.productId,
@@ -219,6 +223,7 @@ class Sale {
     this.consumedKg,
     this.buyerDeductionKg,
     this.buyerDeductionMaterialType,
+    this.pattaraiName,
   });
 
   Map<String, dynamic> toMap() => {
@@ -241,6 +246,7 @@ class Sale {
     if (consumedKg != null) 'consumedKg': consumedKg,
     if (buyerDeductionKg != null) 'buyerDeductionKg': buyerDeductionKg,
     if (buyerDeductionMaterialType != null) 'buyerDeductionMaterialType': buyerDeductionMaterialType,
+    if (pattaraiName != null) 'pattaraiName': pattaraiName,
   };
 
   factory Sale.fromMap(String id, Map<String, dynamic> m) {
@@ -266,6 +272,7 @@ class Sale {
       consumedKg: (m['consumedKg'] as num?)?.toDouble(),
       buyerDeductionKg: (m['buyerDeductionKg'] as num?)?.toDouble(),
       buyerDeductionMaterialType: m['buyerDeductionMaterialType'] as String?,
+      pattaraiName: m['pattaraiName'] as String?,
     );
   }
 
@@ -839,4 +846,59 @@ class PartyStock {
       stock: stock,
     );
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PATTARAI (shop / label name shown on screens and sale records — display
+// only, does NOT create separate stock or filter any data).
+// ══════════════════════════════════════════════════════════════════════════════
+class Pattarai {
+  final String? id;
+  final String name;
+  final bool isActive;
+  final int sortOrder;
+
+  const Pattarai({
+    this.id,
+    required this.name,
+    this.isActive = false,
+    this.sortOrder = 0,
+  });
+
+  Map<String, dynamic> toMap() => {
+    'name': name,
+    'isActive': isActive,
+    'sortOrder': sortOrder,
+  };
+
+  factory Pattarai.fromMap(String id, Map<String, dynamic> m) => Pattarai(
+    id: id,
+    name: m['name'] ?? '',
+    isActive: m['isActive'] ?? false,
+    sortOrder: (m['sortOrder'] as num?)?.toInt() ?? 0,
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// APP SETTINGS (Advanced settings — single document)
+// ══════════════════════════════════════════════════════════════════════════════
+class AppSettings {
+  final double lowStockThresholdKg; // Inventory tab highlights a material red below this
+  final Map<String, double> defaultRatesPerKg; // keyed by RawMaterialType.displayName
+
+  const AppSettings({
+    this.lowStockThresholdKg = 0,
+    this.defaultRatesPerKg = const {},
+  });
+
+  Map<String, dynamic> toMap() => {
+    'lowStockThresholdKg': lowStockThresholdKg,
+    'defaultRatesPerKg': defaultRatesPerKg,
+  };
+
+  factory AppSettings.fromMap(Map<String, dynamic> m) => AppSettings(
+    lowStockThresholdKg: (m['lowStockThresholdKg'] as num?)?.toDouble() ?? 0,
+    defaultRatesPerKg: ((m['defaultRatesPerKg'] as Map<String, dynamic>?) ?? {})
+        .map((k, v) => MapEntry(k, (v as num).toDouble())),
+  );
 }
