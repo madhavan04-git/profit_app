@@ -226,31 +226,7 @@ class _BuyerTransactionsScreenState extends State<BuyerTransactionsScreen>
       body: _selectedBuyer == null
           ? _buildAllBuyersTabs()
           : _buildBuyerStatementView(_selectedBuyer!),
-      floatingActionButton: _selectedBuyer != null
-          ? Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                FloatingActionButton.extended(
-                  heroTag: 'addDue',
-                  onPressed: () => _openDueForm(_selectedBuyer!),
-                  icon: const Icon(Icons.add_card),
-                  label: const Text('Add Due'),
-                  backgroundColor: const Color(0xFFCC4444),
-                  foregroundColor: Colors.white,
-                ),
-                const SizedBox(height: 12),
-                FloatingActionButton.extended(
-                  heroTag: 'addPayment',
-                  onPressed: () => _openPaymentForm(_selectedBuyer!),
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add Payment'),
-                  backgroundColor: const Color(0xFF1F4E79),
-                  foregroundColor: Colors.white,
-                ),
-              ],
-            )
-          : null,
+      floatingActionButton:  null,
     );
   }
 

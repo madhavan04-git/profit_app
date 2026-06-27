@@ -116,18 +116,30 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  void _editSale(Sale sale) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => AddSaleSheet(
+        date: _date,
+        products: _products,
+        buyers: _buyers,
+        pattaraiName: _selectedPattaraiName,
+        onSaved: _reloadSales,
+        existingSale: sale,
+      ),
+    );
+  }
+
   // UPDATED: Delete sale with reversal of stock and credit
  Future<void> _deleteSale(Sale sale) async {
   final ok = await showDialog<bool>(
     context: context,
-    builder: (_) => AlertDialog(
-      title: const Text('Delete sale?'),
-      content: Text('Delete ${sale.productName} — Rs ${sale.profit.toStringAsFixed(2)} profit?'),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-        TextButton(onPressed: () => Navigator.pop(context, true),
-            child: const Text('Delete', style: TextStyle(color: Colors.red))),
-      ],
+    barrierDismissible: false,
+    builder: (_) => _SecureDeleteDialog(
+      itemLabel: sale.productName,
+      itemSubtitle: 'Rs ${sale.profit.toStringAsFixed(2)} profit',
     ),
   );
   if (ok != true) return;
@@ -553,8 +565,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         Icons.receipt_long_outlined,
                       )
                     else
-                      ..._sales.map((s) =>
-                          _SaleCard(sale: s, onDelete: () => _deleteSale(s))),
+                      ..._sales.map((s) => _SaleCard(
+                          sale: s,
+                          onEdit: () => _editSale(s),
+                          onDelete: () => _deleteSale(s))),
                   ],
                 ),
               ),
@@ -634,67 +648,219 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// SECURE DELETE DIALOG — GitHub-repo style: user must type DELETE to confirm.
+// Reusable for any "this can't be undone" delete in the app.
+// ══════════════════════════════════════════════════════════════════════════════
+class _SecureDeleteDialog extends StatefulWidget {
+  final String itemLabel;
+  final String? itemSubtitle;
+  final String confirmWord;
+  const _SecureDeleteDialog({
+    required this.itemLabel,
+    this.itemSubtitle,
+    this.confirmWord = 'DELETE',
+  });
+
+  @override
+  State<_SecureDeleteDialog> createState() => _SecureDeleteDialogState();
+}
+
+class _SecureDeleteDialogState extends State<_SecureDeleteDialog> {
+  final _ctrl = TextEditingController();
+  bool _matches = false;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Row(children: const [
+        Icon(Icons.warning_amber_rounded, color: Color(0xFFCC4444)),
+        SizedBox(width: 8),
+        Text('Delete sale?'),
+      ]),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('${widget.itemLabel}'
+              '${widget.itemSubtitle != null ? ' — ${widget.itemSubtitle}' : ''}'),
+          const SizedBox(height: 8),
+          const Text(
+            'This cannot be undone — stock and buyer balances will be '
+            'reversed permanently.',
+            style: TextStyle(fontSize: 12, color: Color(0xFF888888)),
+          ),
+          const SizedBox(height: 14),
+          Text.rich(
+            TextSpan(
+              style: const TextStyle(fontSize: 13),
+              children: [
+                const TextSpan(text: 'Type '),
+                TextSpan(
+                    text: widget.confirmWord,
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                const TextSpan(text: ' to confirm:'),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _ctrl,
+            autofocus: true,
+            decoration: InputDecoration(
+              hintText: widget.confirmWord,
+              filled: true,
+              fillColor: const Color(0xFFF5F6FA),
+              border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide.none),
+              isDense: true,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            ),
+            onChanged: (v) =>
+                setState(() => _matches = v.trim() == widget.confirmWord),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel')),
+        ElevatedButton(
+          onPressed: _matches ? () => Navigator.pop(context, true) : null,
+          style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFCC4444),
+              foregroundColor: Colors.white,
+              disabledBackgroundColor: const Color(0xFFCC4444).withOpacity(0.3)),
+          child: const Text('Delete'),
+        ),
+      ],
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // SALE CARD
 // ══════════════════════════════════════════════════════════════════════════════
 class _SaleCard extends StatelessWidget {
   final Sale sale;
+  final VoidCallback onEdit;
   final VoidCallback onDelete;
-  const _SaleCard({required this.sale, required this.onDelete});
+  const _SaleCard({required this.sale, required this.onEdit, required this.onDelete});
 
   @override
   Widget build(BuildContext context) {
     final fmt = NumberFormat('#,##0.00', 'en_IN');
     final s = sale;
+    final qtyText =
+        '${s.qty % 1 == 0 ? s.qty.toInt() : s.qty.toStringAsFixed(1)} ${s.displayUnit}';
+    final metaParts = [
+      qtyText,
+      if (s.buyerName != null) s.buyerName!,
+      if (s.pattaraiName != null) s.pattaraiName!,
+    ];
+
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: const Color(0xFFEEEEEE))),
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-        leading: Container(
-          width: 42,
-          height: 42,
-          decoration: BoxDecoration(
-            color: s.productCategory == 'SS'
-                ? const Color(0xFFE6F1FB)
-                : const Color(0xFFFAEEDA),
-            borderRadius: BorderRadius.circular(10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── Category icon ────────────────────────────────────────────────
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: s.productCategory == 'SS'
+                  ? const Color(0xFFE6F1FB)
+                  : const Color(0xFFFAEEDA),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            alignment: Alignment.center,
+            child: Text(s.productCategory,
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: s.productCategory == 'SS'
+                        ? const Color(0xFF1F4E79)
+                        : const Color(0xFF7B4F06))),
           ),
-          child: Center(
-              child: Text(s.productCategory,
-                  style: TextStyle(
-                      fontSize: 11,
+          const SizedBox(width: 12),
+
+          // ── Name + meta info (qty • buyer • pattarai) ───────────────────
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(s.productName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 3),
+                Text(metaParts.join('  •  '),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                        fontSize: 12, color: Color(0xFF888888))),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+
+          // ── Profit + actions, aligned as a tidy column on the right ────
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text('Rs ${fmt.format(s.profit)}',
+                  style: const TextStyle(
                       fontWeight: FontWeight.bold,
-                      color: s.productCategory == 'SS'
-                          ? const Color(0xFF1F4E79)
-                          : const Color(0xFF7B4F06)))),
-        ),
-        title: Text(s.productName,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-        subtitle: Text(
-            '${s.qty % 1 == 0 ? s.qty.toInt() : s.qty.toStringAsFixed(1)} ${s.displayUnit}'
-            '${s.buyerName != null ? '  •  ${s.buyerName}' : ''}'
-            '${s.pattaraiName != null ? '  •  ${s.pattaraiName}' : ''}',
-            style: const TextStyle(fontSize: 12, color: Color(0xFF888888))),
-        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-          Text('Rs ${fmt.format(s.profit)}',
-              style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 14,
-                  color: Color(0xFF1A6B2A))),
-          const SizedBox(width: 4),
-          IconButton(
-              icon: const Icon(Icons.delete_outline,
-                  size: 18, color: Color(0xFFCC4444)),
-              onPressed: onDelete,
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints()),
-        ]),
+                      fontSize: 14,
+                      color: Color(0xFF1A6B2A))),
+              const SizedBox(height: 6),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _actionButton(
+                      icon: Icons.edit_outlined,
+                      color: const Color(0xFF1F4E79),
+                      onTap: onEdit),
+                  const SizedBox(width: 6),
+                  _actionButton(
+                      icon: Icons.delete_outline,
+                      color: const Color(0xFFCC4444),
+                      onTap: onDelete),
+                ],
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
+
+  // Small tappable icon with a generous hit area but a compact visual size,
+  // so the two buttons sit neatly side by side without crowding the profit text.
+  Widget _actionButton(
+          {required IconData icon, required Color color, required VoidCallback onTap}) =>
+      InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Icon(icon, size: 17, color: color),
+        ),
+      );
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -718,6 +884,12 @@ class AddSaleSheet extends StatefulWidget {
   final List<Buyer> buyers;
   final String? pattaraiName;
   final VoidCallback onSaved;
+  // When non-null, the sheet opens in EDIT mode: fields are pre-filled from
+  // this sale, and on save the old sale's stock/credit effects are reversed
+  // first (same reversal _deleteSale already does), then a fresh sale is
+  // added with the edited values. The sheet title/button also change to
+  // "Edit Sale" / "Update Sale".
+  final Sale? existingSale;
   const AddSaleSheet({
     super.key,
     required this.date,
@@ -725,6 +897,7 @@ class AddSaleSheet extends StatefulWidget {
     required this.buyers,
     this.pattaraiName,
     required this.onSaved,
+    this.existingSale,
   });
   @override
   State<AddSaleSheet> createState() => _AddSaleSheetState();
@@ -760,6 +933,53 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     super.initState();
     _loadWorkers();
     _loadAllStock();
+    _prefillFromExistingSale();
+  }
+
+  // ── EDIT MODE: pre-fill all fields from the sale being edited ─────────────
+  void _prefillFromExistingSale() {
+    final existing = widget.existingSale;
+    if (existing == null) return;
+
+    // Match the product by id so the tile grid highlights it correctly.
+    Product? matchedProduct;
+    for (final p in widget.products) {
+      if (p.id == existing.productId) {
+        matchedProduct = p;
+        break;
+      }
+    }
+    _product = matchedProduct;
+
+    if (existing.buyerId != null) {
+      for (final b in widget.buyers) {
+        if (b.id == existing.buyerId) {
+          _buyer = b;
+          break;
+        }
+      }
+    }
+
+    _qty.text = existing.qty % 1 == 0
+        ? existing.qty.toInt().toString()
+        : existing.qty.toString();
+
+    _effectivePrice = existing.salePrice;
+    _priceCtrl.text = existing.soldByPiece
+        ? existing.salePrice.toStringAsFixed(2)
+        : existing.salePrice.toStringAsFixed(0);
+
+    // If the saved price differs from the product's current default price,
+    // treat it as a custom price so the field stays visible/editable.
+    if (matchedProduct != null) {
+      final defaultPrice = matchedProduct.soldByPiece
+          ? matchedProduct.sellPricePerKg *
+              (matchedProduct.productWeightG / 1000.0)
+          : matchedProduct.sellPricePerKg;
+      _customPrice = (existing.salePrice - defaultPrice).abs() > 0.01;
+    }
+
+    _profit = existing.profit;
   }
 
   Future<void> _loadWorkers() async {
@@ -948,6 +1168,38 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       return;
     }
 
+    setState(() => _saving = true);
+
+    // ── EDIT MODE: reverse the old sale's stock/credit effects first ──────
+    // (Same steps _deleteSale uses on the home screen — restore global
+    // stock, restore buyer stock, remove the old raw-material credit —
+    // before this sheet adds a brand-new sale with the edited values.)
+    final editing = widget.existingSale;
+    if (editing != null) {
+      if (editing.consumptionTxId != null) {
+        await FirebaseService.instance
+            .deleteRawMaterialTransaction(editing.consumptionTxId!);
+      }
+      if (editing.buyerId != null &&
+          editing.buyerDeductionMaterialType != null &&
+          editing.buyerDeductionKg != null &&
+          editing.buyerDeductionKg! > 0) {
+        final material =
+            RawMaterialType.fromString(editing.buyerDeductionMaterialType!);
+        await FirebaseService.instance.updatePartyStock(
+          editing.buyerId!,
+          editing.buyerName ?? 'Unknown',
+          'buyer',
+          material,
+          editing.buyerDeductionKg!, // positive to restore
+        );
+      }
+      if (editing.rawMaterialCreditId != null) {
+        await FirebaseService.instance
+            .deleteSimpleTransaction(editing.rawMaterialCreditId!);
+      }
+    }
+
     final isPieceProduct = _product!.soldByPiece;
     final totalKgNeeded = _getKgConsumed(_product!, qty);
 
@@ -1007,7 +1259,6 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
       }
     }
 
-    setState(() => _saving = true);
     final finalWorkerRates = _getFinalWorkerRates();
 
     final sale = Sale(
@@ -1053,6 +1304,11 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
           await FirebaseService.instance.addSimpleTransaction(tx);
       await FirebaseService.instance
           .updateSaleRawMaterialCredit(saleId, creditTxId);
+    }
+
+    // EDIT MODE: now that the replacement sale exists, remove the old one.
+    if (editing != null && editing.id != null) {
+      await FirebaseService.instance.deleteSale(editing.id!);
     }
 
     widget.onSaved();
@@ -1330,9 +1586,9 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
                   borderRadius: BorderRadius.circular(2))),
 
           Row(children: [
-            const Text('Add Sale',
+            Text(widget.existingSale != null ? 'Edit Sale' : 'Add Sale',
                 style:
-                    TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             const Spacer(),
             Text(DateFormat('dd MMM yyyy').format(widget.date),
                 style: const TextStyle(
@@ -1828,8 +2084,8 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
                       height: 22,
                       child: CircularProgressIndicator(
                           strokeWidth: 2, color: Colors.white))
-                  : const Text('Save Sale',
-                      style: TextStyle(
+                  : Text(widget.existingSale != null ? 'Update Sale' : 'Save Sale',
+                      style: const TextStyle(
                           fontSize: 16, fontWeight: FontWeight.bold)),
             ),
           ),

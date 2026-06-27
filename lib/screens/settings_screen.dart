@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/models.dart';
 import '../services/firebase_service.dart';
+import 'account_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -321,6 +322,46 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       color: Colors.white.withOpacity(0.75), fontSize: 12)),
             ]),
           ),
+
+          // ── Account (business details: PAN, GST, bank, QR) ─────────────────
+          _sectionTitle('Account', Icons.account_circle_outlined),
+          const SizedBox(height: 10),
+          _card(children: [
+            InkWell(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AccountScreen()),
+              ),
+              borderRadius: BorderRadius.circular(10),
+              child: Row(children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                      color: const Color(0xFFE6F1FB),
+                      borderRadius: BorderRadius.circular(8)),
+                  child: const Icon(Icons.storefront_outlined,
+                      size: 18, color: Color(0xFF1F4E79)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: const [
+                      Text('Business Details',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 13)),
+                      SizedBox(height: 2),
+                      Text('PAN, GST, address, bank details & payment QR',
+                          style: TextStyle(
+                              fontSize: 11, color: Color(0xFF888888))),
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right, color: Color(0xFF888888)),
+              ]),
+            ),
+          ]),
+          const SizedBox(height: 24),
 
           // ── Personal Info ─────────────────────────────────────────────────
           _sectionTitle('Personal Info', Icons.person_outline),

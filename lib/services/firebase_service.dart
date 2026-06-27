@@ -39,6 +39,10 @@ class FirebaseService {
     return cred;
   }
 
+  Future<void> updateRawMaterialTransaction(String id, Map<String, dynamic> fields) async {
+  await _col('rawMaterialTransactions').doc(id).update(fields);
+}
+
   Future<void> logout() => _auth.signOut();
   Stream<User?> get authStateChanges => _auth.authStateChanges();
 
@@ -801,6 +805,29 @@ Future<Map<RawMaterialType, double>> getTotalStock() async {
       }
     });
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // EDIT SALE — full field update (qty, price, buyer, raw-material rate).
+  // Does NOT touch stock/credit side-effects; the home screen handles those
+  // (reverse the old sale's effects, then apply the new ones) before calling
+  // this, the same way _deleteSale already reverses effects before deleting.
+  // ══════════════════════════════════════════════════════════════════════════
+  Future<void> updateSale(String saleId, Map<String, dynamic> fields) async {
+    await _col('sales').doc(saleId).update(fields);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // BUSINESS PROFILE (PAN / GST / address / bank / UPI+QR) — single doc,
+  // same pattern as APP SETTINGS above.
+  // ══════════════════════════════════════════════════════════════════════════
+  Future<BusinessProfile> getBusinessProfile() async {
+    final doc = await _col('settings').doc('business').get();
+    if (doc.exists) return BusinessProfile.fromMap(doc.data()!);
+    return const BusinessProfile();
+  }
+
+  Future<void> saveBusinessProfile(BusinessProfile profile) =>
+      _col('settings').doc('business').set(profile.toMap());
 }
 
 // Supporting data classes (unchanged)

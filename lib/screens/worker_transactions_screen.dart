@@ -235,15 +235,7 @@ class _WorkerTransactionsScreenState extends State<WorkerTransactionsScreen>
       body: _selectedWorker == null
           ? _buildAllWorkersTabs()
           : _buildWorkerStatementView(_selectedWorker!),
-      floatingActionButton: _selectedWorker != null
-          ? FloatingActionButton.extended(
-              onPressed: () => _openPaymentForm(_selectedWorker!),
-              icon: const Icon(Icons.payments_outlined),
-              label: const Text('Add Payment'),
-              backgroundColor: const Color(0xFF1F4E79),
-              foregroundColor: Colors.white,
-            )
-          : null,
+      floatingActionButton:  null,
     );
   }
 

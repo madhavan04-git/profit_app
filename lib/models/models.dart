@@ -281,10 +281,6 @@ class Sale {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// All other models (Buyer, BuyerTransaction, Worker, etc.) remain unchanged.
-// ══════════════════════════════════════════════════════════════════════════════
-// ... [the rest of your models.dart file] ...
-
 // BUYER
 // ══════════════════════════════════════════════════════════════════════════════
 class Buyer {
@@ -317,8 +313,6 @@ class Buyer {
     isActive: m['isActive'] ?? true,
   );
 }
-
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 // BUYER TRANSACTION (legacy)
@@ -900,5 +894,103 @@ class AppSettings {
     lowStockThresholdKg: (m['lowStockThresholdKg'] as num?)?.toDouble() ?? 0,
     defaultRatesPerKg: ((m['defaultRatesPerKg'] as Map<String, dynamic>?) ?? {})
         .map((k, v) => MapEntry(k, (v as num).toDouble())),
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// BUSINESS PROFILE (NEW) — PAN, GST, address, bank details, and the
+// payment QR (either uploaded as an image or auto-generated from a UPI ID).
+// Stored as a single document, same pattern as AppSettings above. Lets you
+// look up your own business details quickly when a customer asks.
+// ══════════════════════════════════════════════════════════════════════════════
+class BusinessProfile {
+  final String businessName;
+  final String pan;
+  final String gst;
+  final String address;
+  final String phone;
+
+  // Bank details
+  final String bankAccountHolder;
+  final String bankAccountNumber;
+  final String bankIfsc;
+  final String bankName;
+
+  // QR / UPI
+  final String upiId;
+  // If the user uploaded their own QR image, this holds a base64-encoded
+  // PNG/JPEG string (small images only — keep under ~700KB before encoding).
+  // If empty, the UI auto-generates a QR from [upiId] instead.
+  final String qrImageBase64;
+
+  const BusinessProfile({
+    this.businessName = '',
+    this.pan = '',
+    this.gst = '',
+    this.address = '',
+    this.phone = '',
+    this.bankAccountHolder = '',
+    this.bankAccountNumber = '',
+    this.bankIfsc = '',
+    this.bankName = '',
+    this.upiId = '',
+    this.qrImageBase64 = '',
+  });
+
+  bool get hasUploadedQr => qrImageBase64.isNotEmpty;
+  bool get hasAnyQr => qrImageBase64.isNotEmpty || upiId.isNotEmpty;
+
+  Map<String, dynamic> toMap() => {
+    'businessName': businessName,
+    'pan': pan,
+    'gst': gst,
+    'address': address,
+    'phone': phone,
+    'bankAccountHolder': bankAccountHolder,
+    'bankAccountNumber': bankAccountNumber,
+    'bankIfsc': bankIfsc,
+    'bankName': bankName,
+    'upiId': upiId,
+    'qrImageBase64': qrImageBase64,
+  };
+
+  factory BusinessProfile.fromMap(Map<String, dynamic> m) => BusinessProfile(
+    businessName: m['businessName'] ?? '',
+    pan: m['pan'] ?? '',
+    gst: m['gst'] ?? '',
+    address: m['address'] ?? '',
+    phone: m['phone'] ?? '',
+    bankAccountHolder: m['bankAccountHolder'] ?? '',
+    bankAccountNumber: m['bankAccountNumber'] ?? '',
+    bankIfsc: m['bankIfsc'] ?? '',
+    bankName: m['bankName'] ?? '',
+    upiId: m['upiId'] ?? '',
+    qrImageBase64: m['qrImageBase64'] ?? '',
+  );
+
+  BusinessProfile copyWith({
+    String? businessName,
+    String? pan,
+    String? gst,
+    String? address,
+    String? phone,
+    String? bankAccountHolder,
+    String? bankAccountNumber,
+    String? bankIfsc,
+    String? bankName,
+    String? upiId,
+    String? qrImageBase64,
+  }) => BusinessProfile(
+    businessName: businessName ?? this.businessName,
+    pan: pan ?? this.pan,
+    gst: gst ?? this.gst,
+    address: address ?? this.address,
+    phone: phone ?? this.phone,
+    bankAccountHolder: bankAccountHolder ?? this.bankAccountHolder,
+    bankAccountNumber: bankAccountNumber ?? this.bankAccountNumber,
+    bankIfsc: bankIfsc ?? this.bankIfsc,
+    bankName: bankName ?? this.bankName,
+    upiId: upiId ?? this.upiId,
+    qrImageBase64: qrImageBase64 ?? this.qrImageBase64,
   );
 }
