@@ -24,6 +24,9 @@ dependencies:
   # Device Info
   device_info_plus: ^10.1.2
 
+  # AI (Google Gemini REST API — free tier)
+  http: ^1.2.0
+
   # UI / Utils
   intl: ^0.18.1
   fl_chart: ^0.66.2

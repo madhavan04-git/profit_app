@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/models.dart';
+import '../services/app_toast.dart';
 import '../services/firebase_service.dart';
 
 class BuyerTransactionsScreen extends StatefulWidget {
@@ -1914,7 +1915,12 @@ class _PaymentFormState extends State<_PaymentForm> {
     );
     await FirebaseService.instance.addSimpleTransaction(tx);
     widget.onSaved();
-    if (mounted) Navigator.pop(context);
+    if (mounted) {
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.pop(context);
+      AppToast.showWith(messenger, ToastEvent.payment,
+          name: widget.buyer.name);
+    }
   }
 
   @override
@@ -2109,7 +2115,11 @@ class _DueFormState extends State<_DueForm> {
     );
     await FirebaseService.instance.addSimpleTransaction(tx);
     widget.onSaved();
-    if (mounted) Navigator.pop(context);
+    if (mounted) {
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.pop(context);
+      AppToast.showWith(messenger, ToastEvent.due, name: widget.buyer.name);
+    }
   }
 
   @override

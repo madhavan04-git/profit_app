@@ -2,6 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import '../models/models.dart';
+import '../services/ai_language.dart';
+import '../services/ai_service.dart';
 import '../services/firebase_service.dart';
 import 'account_screen.dart';
 
@@ -42,6 +44,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
     for (final m in RawMaterialType.values) m: TextEditingController(),
   };
 
+  // ── AI Assistant ───────────────────────────────────────────────────────────
+  final _aiKeyCtrl = TextEditingController();
+  bool _savingAiKey = false;
+  bool _showAiKey = false;
+
   @override
   void initState() {
     super.initState();
@@ -56,6 +63,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _newPassCtrl.dispose();
     _confirmPassCtrl.dispose();
     _thresholdCtrl.dispose();
+    _aiKeyCtrl.dispose();
     for (final c in _rateCtrls.values) c.dispose();
     super.dispose();
   }
@@ -105,6 +113,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final v = settings.defaultRatesPerKg[m.displayName];
         _rateCtrls[m]!.text = (v != null && v > 0) ? v.toStringAsFixed(0) : '';
       }
+      _aiKeyCtrl.text = settings.geminiApiKey;
       setState(() {
         _settings = settings;
         _loadingSettings = false;
@@ -138,22 +147,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _refreshUserDisplay();
       }
 
-      // 2. Save/update the single pattarai shop name
+      // 2. Rename the main pattarai (the one shown in the greeting).
+      //
+      // This used to delete every other pattarai to "clean up duplicates".
+      // It must not: pattarais now carry their own sheet/wastage ledger, so
+      // deleting one here would silently destroy that history. Extra
+      // pattarais are managed in Inventory → Sheet / Wastage.
       final existing = await _svc.getPattarais();
       if (existing.isNotEmpty && existing.first.id != null) {
-        // Update the existing document
         await _svc.savePattarai(Pattarai(
           id: existing.first.id,
           name: shopName,
           isActive: true,
-          sortOrder: 0,
+          sortOrder: existing.first.sortOrder,
         ));
-        // Clean up duplicates (keep only the first one)
-        for (int i = 1; i < existing.length; i++) {
-          if (existing[i].id != null) {
-            await _svc.deletePattarai(existing[i].id!);
-          }
-        }
       } else {
         // First time — create the single entry
         await _svc.savePattarai(
@@ -253,8 +260,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         final v = double.tryParse(_rateCtrls[m]!.text) ?? 0;
         if (v > 0) rates[m.displayName] = v;
       }
-      final newSettings =
-          AppSettings(lowStockThresholdKg: threshold, defaultRatesPerKg: rates);
+      // copyWith, not a fresh AppSettings — a plain constructor here would
+      // silently wipe the saved AI key.
+      final newSettings = _settings.copyWith(
+        lowStockThresholdKg: threshold,
+        defaultRatesPerKg: rates,
+      );
       await _svc.saveAppSettings(newSettings);
       setState(() => _settings = newSettings);
       _snack('Settings saved');
@@ -262,6 +273,38 @@ class _SettingsScreenState extends State<SettingsScreen> {
       _snack('Error saving settings: $e');
     }
     setState(() => _savingSettings = false);
+  }
+
+  // ── Save the Gemini API key ────────────────────────────────────────────────
+  Future<void> _saveAiKey() async {
+    setState(() => _savingAiKey = true);
+    try {
+      final newSettings =
+          _settings.copyWith(geminiApiKey: _aiKeyCtrl.text.trim());
+      await _svc.saveAppSettings(newSettings);
+      AiService.instance.invalidateSettings();
+      setState(() => _settings = newSettings);
+      _snack(_aiKeyCtrl.text.trim().isEmpty
+          ? 'AI key cleared'
+          : 'AI key saved — assistant is ready');
+    } catch (e) {
+      _snack('Error saving AI key: $e');
+    }
+    setState(() => _savingAiKey = false);
+  }
+
+  // ── Save the answer language ───────────────────────────────────────────────
+  Future<void> _saveAiLanguage(String pref) async {
+    final previous = _settings;
+    setState(() => _settings = _settings.copyWith(aiLanguage: pref));
+    try {
+      await _svc.saveAppSettings(_settings);
+      AiService.instance.invalidateSettings();
+      _snack('Answers in ${AiLangPref.label(pref)}');
+    } catch (e) {
+      setState(() => _settings = previous); // put the chip back
+      _snack('Could not save language: $e');
+    }
   }
 
   void _snack(String msg) {
@@ -479,6 +522,86 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 color: const Color(0xFF7B4F06),
               ),
             ],
+          ]),
+          const SizedBox(height: 24),
+
+          // ── AI Assistant ──────────────────────────────────────────────────
+          _sectionTitle('AI Assistant', Icons.auto_awesome),
+          const SizedBox(height: 10),
+          _card(children: [
+            const Text('Google Gemini API key',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            const SizedBox(height: 4),
+            const Text(
+              'The assistant reads your sales, expenses, buyers and stock, then '
+              'answers your questions in Tamil, Tanglish or English.\n\n'
+              'Get a FREE key at aistudio.google.com/apikey — sign in, tap '
+              '"Create API key", copy and paste it below. No credit card needed.',
+              style: TextStyle(fontSize: 11, color: Color(0xFF888888), height: 1.45),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _aiKeyCtrl,
+              obscureText: !_showAiKey,
+              decoration: InputDecoration(
+                labelText: 'Gemini API key',
+                hintText: 'AIza...',
+                prefixIcon: const Icon(Icons.key_outlined, size: 20),
+                suffixIcon: IconButton(
+                  icon: Icon(
+                      _showAiKey ? Icons.visibility_off : Icons.visibility,
+                      size: 20),
+                  onPressed: () => setState(() => _showAiKey = !_showAiKey),
+                ),
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                isDense: true,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _settings.geminiApiKey.isNotEmpty
+                  ? 'A key is saved. Leave the box empty and save to remove it.'
+                  : 'No key saved yet — the assistant will use the key built '
+                      'into the app, if one was added.',
+              style: const TextStyle(fontSize: 11, color: Color(0xFF888888)),
+            ),
+            const SizedBox(height: 18),
+            const Text('Answer language',
+                style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+            const SizedBox(height: 4),
+            const Text(
+              'Auto follows the language you type in — Tamil question gets a '
+              'Tamil answer, Tanglish gets Tanglish.',
+              style: TextStyle(fontSize: 11, color: Color(0xFF888888)),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              children: [
+                for (final p in AiLangPref.all)
+                  ChoiceChip(
+                    label: Text(AiLangPref.label(p)),
+                    selected: _settings.aiLanguage == p,
+                    onSelected: (_) => _saveAiLanguage(p),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Simple questions (profit, pending, stock, expenses) are answered '
+              'straight from your own records — instantly, with no internet and '
+              'without using any AI quota. Only questions that need real thinking '
+              'go to the AI, so the free limit lasts a long time.',
+              style: TextStyle(fontSize: 11, color: Color(0xFF1A6B2A), height: 1.45),
+            ),
+            const SizedBox(height: 14),
+            _saveBtn(
+              label: 'Save AI Key',
+              loading: _savingAiKey,
+              onPressed: _saveAiKey,
+              color: const Color(0xFF4A2B7B),
+            ),
           ]),
           const SizedBox(height: 24),
 

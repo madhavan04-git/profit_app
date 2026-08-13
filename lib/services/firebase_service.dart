@@ -348,8 +348,88 @@ class FirebaseService {
     return ref.id;
   }
 
+  /// Deletes a raw-material transaction AND undoes everything it did.
+  ///
+  /// Company stock needs no repair — getCurrentStock() re-adds the remaining
+  /// transactions every time, so removing the row removes its effect.
+  ///
+  /// Party stock is different: it is a running balance written at save time,
+  /// so it must be reversed here or the party keeps kg they no longer gave us.
+  ///
+  /// Wastage rows written by the Sheet/Wastage screen also carry a pattarai
+  /// ledger entry; that is removed too, otherwise the scrap store would still
+  /// count material that has just been put back into stock.
   Future<void> deleteRawMaterialTransaction(String id) async {
+    final doc = await _col('rawMaterialTransactions').doc(id).get();
+
+    if (doc.exists) {
+      final tx = RawMaterialTransaction.fromMap(doc.id, doc.data()!);
+
+      // 1. Give back / take back the party's sheet balance.
+      if (tx.supplierId != null && tx.supplierId!.isNotEmpty) {
+        final party = await getPartyStock(tx.supplierId!);
+        await updatePartyStock(
+          tx.supplierId!,
+          tx.supplierName ?? party?.partyName ?? '',
+          party?.partyType ?? 'supplier',
+          tx.materialType,
+          partyStockReversalKg(tx),
+        );
+      }
+
+      // 2. Drop the matching pattarai wastage entry, if this row came from one.
+      if (tx.transactionType == 'wastage') {
+        final linked = await _col('pattaraiStock')
+            .where('stockTxId', isEqualTo: id)
+            .get();
+        for (final d in linked.docs) {
+          await d.reference.delete();
+        }
+      }
+    }
+
     await _col('rawMaterialTransactions').doc(id).delete();
+  }
+
+  /// What deleting [tx] will change — used to spell it out in the confirm
+  /// dialog before anything is touched.
+  Future<List<String>> describeDeleteEffects(RawMaterialTransaction tx) async {
+    final kg = tx.quantityKg.abs().toStringAsFixed(2);
+    final name = tx.materialType.displayName;
+    final effects = <String>[];
+
+    final isParty = tx.supplierId != null && tx.supplierId!.isNotEmpty;
+
+    if (!isParty) {
+      if (tx.transactionType == 'purchase') {
+        effects.add('$kg kg $name comes OFF company stock');
+      } else {
+        effects.add('$kg kg $name goes BACK INTO company stock');
+      }
+    } else {
+      final party = await getPartyStock(tx.supplierId!);
+      final partyName =
+          tx.supplierName ?? party?.partyName ?? 'the party';
+      final current = party?.stock[tx.materialType] ?? 0;
+      final after = current + partyStockReversalKg(tx);
+      effects.add(
+        '$partyName balance: ${current.toStringAsFixed(2)} kg → '
+        '${after.toStringAsFixed(2)} kg $name',
+      );
+      if (after < -0.01) {
+        effects.add('That leaves $partyName negative — they would owe sheet.');
+      }
+    }
+
+    if (tx.transactionType == 'wastage') {
+      effects.add('The matching wastage entry is removed from the pattarai '
+          'ledger and the scrap store');
+    }
+    if (tx.isCredit && tx.creditAmount > 0) {
+      effects.add('Note: the credit of Rs ${tx.creditAmount.round()} is NOT '
+          'adjusted automatically — check the party account');
+    }
+    return effects;
   }
 
   Future<double> yearlyTotalProfit(int year) async {
@@ -386,23 +466,108 @@ class FirebaseService {
     Map<RawMaterialType, double> stock = {};
     for (var doc in q.docs) {
       final tx = RawMaterialTransaction.fromMap(doc.id, doc.data());
-      // Only count transactions that are not linked to a party (global/company)
-      if (tx.supplierId == null) {
-        double delta;
-        if (tx.transactionType == 'purchase') {
-          delta = tx.quantityKg.abs(); // always positive
-        } else if (tx.transactionType == 'consumption') {
-          // quantityKg stored as negative — use as-is so it subtracts
-          delta = -tx.quantityKg.abs(); // always negative
-        } else {
-          // 'sale' or any other type — subtract
-          delta = -tx.quantityKg.abs();
-        }
-        stock[tx.materialType] = (stock[tx.materialType] ?? 0) + delta;
+      // Only count transactions that are not linked to a party (global/company).
+      // The sign rule lives in companyStockDelta() so it can be tested.
+      if (affectsCompanyStock(tx)) {
+        stock[tx.materialType] =
+            (stock[tx.materialType] ?? 0) + companyStockDelta(tx);
       }
     }
     return stock;
   }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // PATTARAI STOCK — sheet issued to a workshop, pieces back, wastage.
+  // See the accounting rules on PattaraiStockTx in models.dart.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  Stream<List<PattaraiStockTx>> pattaraiStockStream() =>
+      _col('pattaraiStock').snapshots().map((s) {
+        final list = s.docs
+            .map((d) => PattaraiStockTx.fromMap(d.id, d.data()))
+            .toList();
+        list.sort((a, b) => b.date.compareTo(a.date));
+        return list;
+      });
+
+  Future<List<PattaraiStockTx>> getPattaraiStockTxs() async {
+    final q = await _col('pattaraiStock').get();
+    final list =
+        q.docs.map((d) => PattaraiStockTx.fromMap(d.id, d.data())).toList();
+    list.sort((a, b) => b.date.compareTo(a.date));
+    return list;
+  }
+
+  /// Records one pattarai entry.
+  ///
+  /// Wastage — and only wastage — also writes a company raw-material
+  /// transaction so the loss comes off total stock. Issue and pieces are
+  /// internal movements and leave company stock alone.
+  Future<String> addPattaraiStockTx(PattaraiStockTx tx) async {
+    String? stockTxId;
+
+    if (tx.type == PattaraiTxType.wastage) {
+      // supplierId stays null so getCurrentStock() counts it as company stock,
+      // where any non-purchase type is subtracted.
+      final ref = await _col('rawMaterialTransactions').add(
+        RawMaterialTransaction(
+          materialType: tx.materialType,
+          date: tx.date,
+          quantityKg: tx.quantityKg.abs(),
+          ratePerKg: 0,
+          transactionType: 'wastage',
+          note: 'Wastage — ${tx.pattaraiName}'
+              '${tx.note.isEmpty ? '' : ' (${tx.note})'}',
+        ).toMap(),
+      );
+      stockTxId = ref.id;
+    }
+
+    final doc = await _col('pattaraiStock').add(
+      PattaraiStockTx(
+        pattaraiId: tx.pattaraiId,
+        pattaraiName: tx.pattaraiName,
+        type: tx.type,
+        materialType: tx.materialType,
+        quantityKg: tx.quantityKg.abs(),
+        date: tx.date,
+        note: tx.note,
+        stockTxId: stockTxId,
+      ).toMap(),
+    );
+    return doc.id;
+  }
+
+  /// Removes an entry, and for wastage puts the material back on company stock
+  /// by deleting the linked transaction.
+  Future<void> deletePattaraiStockTx(PattaraiStockTx tx) async {
+    if (tx.stockTxId != null) {
+      await _col('rawMaterialTransactions').doc(tx.stockTxId).delete();
+    }
+    if (tx.id != null) {
+      await _col('pattaraiStock').doc(tx.id).delete();
+    }
+  }
+
+  // ── Wastage sales (scrap sold off every few months) ───────────────────────
+  // These never touch company sheet stock: the material already left stock the
+  // moment the wastage was recorded. They only clear the scrap balance.
+
+  Future<List<WastageSale>> getWastageSales() async {
+    final q = await _col('wastageSales').get();
+    final list =
+        q.docs.map((d) => WastageSale.fromMap(d.id, d.data())).toList();
+    list.sort((a, b) => b.date.compareTo(a.date));
+    return list;
+  }
+
+  Future<String> addWastageSale(WastageSale sale) async {
+    final ref = await _col('wastageSales').add(sale.toMap());
+    return ref.id;
+  }
+
+  Future<void> deleteWastageSale(String id) async =>
+      await _col('wastageSales').doc(id).delete();
 
   // Get stock for a specific buyer (from partyStock)
   Future<double> getBuyerStock(String buyerId, RawMaterialType material) async {
@@ -568,20 +733,12 @@ Future<Map<RawMaterialType, double>> getTotalStock() async {
   // 1. Get global (company) stock — can be negative, shown as-is.
   final global = await getCurrentStock();
 
-  // 2. Get all party stocks, but only add the POSITIVE portion of each.
+  // 2. Add what the parties hold. The positive-only rule lives in
+  //    combineTotalStock() so it can be tested without Firestore.
   final partyDocs = await _col('partyStock').get();
-  final Map<RawMaterialType, double> total = Map.from(global);
-
-  for (var doc in partyDocs.docs) {
-    final party = PartyStock.fromMap(doc.id, doc.data());
-    for (var entry in party.stock.entries) {
-      if (entry.value > 0) {
-        total[entry.key] = (total[entry.key] ?? 0) + entry.value;
-      }
-      // entry.value <= 0 (party owes sheet) is intentionally skipped here.
-    }
-  }
-  return total;
+  final parties =
+      partyDocs.docs.map((d) => PartyStock.fromMap(d.id, d.data()));
+  return combineTotalStock(global, parties);
 }
 
 // Update getCurrentStockForMaterial to use total if needed, but we'll keep it as global-only

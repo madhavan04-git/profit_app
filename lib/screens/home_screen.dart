@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import '../models/models.dart';
+import '../services/app_toast.dart';
 import '../services/firebase_service.dart';
 import 'monthly_screen.dart';
 import 'buyers_screen.dart';
@@ -11,6 +12,9 @@ import 'products_screen.dart';
 import 'buyer_transactions_screen.dart';
 import 'worker_transactions_screen.dart';
 import 'investment_tracker_screen.dart';
+import 'ai_assistant_screen.dart';
+import 'weight_split_screen.dart';
+import 'calculator_screen.dart';
 import 'settings_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -368,6 +372,24 @@ class _HomeScreenState extends State<HomeScreen> {
                 .then((_) => _loadAll());
           }),
 
+          _sideItem(Icons.auto_awesome, 'AI Assistant', () {
+            Navigator.pop(context);
+            Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const AiAssistantScreen()));
+          }),
+
+          _sideItem(Icons.balance, 'Weight Split', () {
+            Navigator.pop(context);
+            Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const WeightSplitScreen()));
+          }),
+
+          _sideItem(Icons.calculate_outlined, 'Calculator', () {
+            Navigator.pop(context);
+            Navigator.push(context,
+                MaterialPageRoute(builder: (_) => const CalculatorScreen()));
+          }),
+
           _sideItem(Icons.settings_outlined, 'Settings', () {
             Navigator.pop(context);
             Navigator.push(context,
@@ -511,6 +533,23 @@ class _HomeScreenState extends State<HomeScreen> {
                       const TextStyle(fontSize: 11, color: Color(0xFF888888))),
             ]),
             const Spacer(),
+            // ★ AI Assistant — small entry point, nothing more ★
+            GestureDetector(
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const AiAssistantScreen()),
+              ),
+              child: Container(
+                width: 38,
+                height: 38,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFE6F1FB),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.auto_awesome,
+                    size: 20, color: Color(0xFF1F4E79)),
+              ),
+            ),
           ]),
           const SizedBox(height: 12),
           Row(children: [
@@ -1312,7 +1351,14 @@ class _AddSaleSheetState extends State<AddSaleSheet> {
     }
 
     widget.onSaved();
-    if (mounted) Navigator.pop(context);
+    if (mounted) {
+      // The buyer chosen on this sale — whatever their name is.
+      final buyerName = _buyer?.name;
+      // Captured before the pop, or the toast has no messenger to land on.
+      final messenger = ScaffoldMessenger.of(context);
+      Navigator.pop(context);
+      AppToast.showWith(messenger, ToastEvent.sale, name: buyerName);
+    }
   }
 
   // ── Stock badge color ───────────────────────────────────────────────────────

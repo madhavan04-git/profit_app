@@ -263,11 +263,32 @@ class _OverviewTabState extends State<_OverviewTab> {
   double _workerBalance = 0;
   bool _accountsLoaded = false;
 
+  // Last month, for the comparison strip at the top.
+  MonthlySummary? _prev;
+
   @override
   void initState() {
     super.initState();
     _loadStock();
     _loadAccountsTotals();
+    _loadPrevMonth();
+  }
+
+  @override
+  void didUpdateWidget(covariant _OverviewTab old) {
+    super.didUpdateWidget(old);
+    if (old.month != widget.month) _loadPrevMonth();
+  }
+
+  Future<void> _loadPrevMonth() async {
+    final prev = DateTime(widget.month.year, widget.month.month - 1);
+    try {
+      final s =
+          await FirebaseService.instance.monthlySummary(prev.year, prev.month);
+      if (mounted) setState(() => _prev = s);
+    } catch (_) {
+      if (mounted) setState(() => _prev = null);
+    }
   }
 
   Future<void> _loadStock() async {
@@ -367,6 +388,9 @@ class _OverviewTabState extends State<_OverviewTab> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // ── vs last month ─────────────────────────────────────────────────
+        _vsLastMonth(s, fmtInt),
+
         // ── KPI row 1 ──────────────────────────────────────────────────────
         Row(children: [
           Expanded(child: _kpi('Total profit', 'Rs ${fmtInt.format(s.totalProfit)}',
@@ -643,6 +667,98 @@ class _OverviewTabState extends State<_OverviewTab> {
   }
 
   // ── Stock balance card: SS / Brass / Copper in 3 columns ─────────────
+  // ── vs last month ──────────────────────────────────────────────────────
+  // The single question a shop owner asks first: better or worse than last
+  // month? Expenses are inverted — spending less is the good direction.
+  Widget _vsLastMonth(MonthlySummary s, NumberFormat fmtInt) {
+    final prev = _prev;
+    if (prev == null) return const SizedBox.shrink();
+
+    final nothingLastMonth = prev.sales.isEmpty && prev.expenses.isEmpty;
+    if (nothingLastMonth) return const SizedBox.shrink();
+
+    Widget row(String label, double now, double before,
+        {bool lowerIsBetter = false, bool isKg = false}) {
+      final diff = now - before;
+      final pct = before.abs() > 0.01 ? (diff / before.abs()) * 100 : null;
+      final good = lowerIsBetter ? diff <= 0 : diff >= 0;
+      final flat = diff.abs() < 0.01;
+      final color = flat
+          ? const Color(0xFF888888)
+          : (good ? const Color(0xFF1A6B2A) : const Color(0xFFBB3333));
+
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(children: [
+          SizedBox(
+            width: 74,
+            child: Text(label,
+                style: const TextStyle(fontSize: 11.5, color: Color(0xFF666666))),
+          ),
+          Expanded(
+            child: Text(
+              isKg
+                  ? '${now.toStringAsFixed(1)} kg'
+                  : 'Rs ${fmtInt.format(now)}',
+              style: const TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.bold),
+            ),
+          ),
+          Icon(
+            flat
+                ? Icons.remove
+                : (diff > 0 ? Icons.arrow_upward : Icons.arrow_downward),
+            size: 13,
+            color: color,
+          ),
+          const SizedBox(width: 3),
+          Text(
+            flat
+                ? 'same'
+                : '${isKg ? '${diff.abs().toStringAsFixed(1)} kg' : 'Rs ${fmtInt.format(diff.abs())}'}'
+                    '${pct == null ? '' : ' (${pct.abs().toStringAsFixed(0)}%)'}',
+            style: TextStyle(
+                fontSize: 11.5, fontWeight: FontWeight.w600, color: color),
+          ),
+        ]),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE3E7EF)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Icon(Icons.compare_arrows, size: 15, color: Color(0xFF1F4E79)),
+          const SizedBox(width: 6),
+          const Text('vs last month',
+              style: TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.bold,
+                  color: Color(0xFF1F4E79))),
+          const Spacer(),
+          Text(
+            DateFormat('MMM yyyy').format(
+                DateTime(widget.month.year, widget.month.month - 1)),
+            style: const TextStyle(fontSize: 10.5, color: Color(0xFF999999)),
+          ),
+        ]),
+        const SizedBox(height: 4),
+        row('Profit', s.totalProfit, prev.totalProfit),
+        row('Net', s.netProfit, prev.netProfit),
+        row('Revenue', s.totalRevenue, prev.totalRevenue),
+        row('Expenses', s.totalExpenses, prev.totalExpenses,
+            lowerIsBetter: true),
+        row('Sold', s.totalKg, prev.totalKg, isKg: true),
+      ]),
+    );
+  }
+
   Widget _buildStockBalanceCard() {
     final materials = [
       (RawMaterialType.ssSheet,     'SS',     const Color(0xFF1F4E79), const Color(0xFFE6F1FB)),

@@ -668,9 +668,61 @@ class WorkerSimpleTransaction {
 // ══════════════════════════════════════════════════════════════════════════════
 // RAW MATERIAL TRACKING (NEW)
 // ══════════════════════════════════════════════════════════════════════════════
+/// The metal itself, independent of the form it comes in. Stock totals are
+/// reported per metal (SS = sheet + circle), while purchases and sales are
+/// still recorded against the exact [RawMaterialType].
+enum MaterialMetal {
+  ss, brass, copper;
+
+  String get displayName {
+    switch (this) {
+      case ss: return 'SS';
+      case brass: return 'Brass';
+      case copper: return 'Copper';
+    }
+  }
+
+  /// Label for the selector chips.
+  String get chipLabel => displayName.toUpperCase();
+
+  RawMaterialType get sheet {
+    switch (this) {
+      case ss: return RawMaterialType.ssSheet;
+      case brass: return RawMaterialType.brassSheet;
+      case copper: return RawMaterialType.copperSheet;
+    }
+  }
+
+  RawMaterialType get circle {
+    switch (this) {
+      case ss: return RawMaterialType.ssCircle;
+      case brass: return RawMaterialType.brassCircle;
+      case copper: return RawMaterialType.copperCircle;
+    }
+  }
+
+  /// The stored type for this metal in the chosen form.
+  RawMaterialType form({required bool isSheet}) => isSheet ? sheet : circle;
+}
+
 enum RawMaterialType {
   ssSheet, brassSheet, copperSheet,
   ssCircle, brassCircle, copperCircle;
+
+  /// Which metal this is — used to total SS sheet + SS circle together.
+  MaterialMetal get metal {
+    switch (this) {
+      case ssSheet:
+      case ssCircle:
+        return MaterialMetal.ss;
+      case brassSheet:
+      case brassCircle:
+        return MaterialMetal.brass;
+      case copperSheet:
+      case copperCircle:
+        return MaterialMetal.copper;
+    }
+  }
 
   String get displayName {
     switch (this) {
@@ -757,6 +809,51 @@ class RawMaterialTransaction {
         note: m['note'] ?? '',
       );
 }
+
+/// True when this row counts toward COMPANY stock. Party-linked rows are held
+/// as a running balance on the party instead.
+bool affectsCompanyStock(RawMaterialTransaction tx) =>
+    tx.supplierId == null || tx.supplierId!.isEmpty;
+
+/// How many kg this row moves company stock by.
+///
+/// Storage conventions this mirrors:
+///   purchase    → adds
+///   consumption → stored negative already, still a subtraction
+///   sale        → subtracts
+///   wastage     → subtracts (scrap is no longer usable sheet)
+/// Anything unrecognised subtracts, which is the safe direction: an unknown
+/// row can never silently inflate stock.
+double companyStockDelta(RawMaterialTransaction tx) {
+  if (!affectsCompanyStock(tx)) return 0;
+  if (tx.transactionType == 'purchase') return tx.quantityKg.abs();
+  return -tx.quantityKg.abs();
+}
+
+/// Total stock on show = company stock + what each party is holding.
+///
+/// Only POSITIVE party balances are added. A negative one means that party
+/// owes sheet, and that shortfall was already taken out of company stock when
+/// the sale was recorded — subtracting it again here would double-count it.
+Map<RawMaterialType, double> combineTotalStock(
+  Map<RawMaterialType, double> company,
+  Iterable<PartyStock> parties,
+) {
+  final total = Map<RawMaterialType, double>.from(company);
+  for (final party in parties) {
+    party.stock.forEach((material, kg) {
+      if (kg > 0) total[material] = (total[material] ?? 0) + kg;
+    });
+  }
+  return total;
+}
+
+/// How much to add to a party's balance to undo [tx].
+/// A purchase credited them sheet, so undoing it takes the sheet back.
+double partyStockReversalKg(RawMaterialTransaction tx) =>
+    tx.transactionType == 'purchase'
+        ? -tx.quantityKg.abs()
+        : tx.quantityKg.abs();
 
 class Supplier {
   final String? id;
@@ -874,26 +971,287 @@ class Pattarai {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// PATTARAI STOCK — sheet issued to a workshop, pieces that come back, and the
+// wastage settled later in bulk.
+//
+// ACCOUNTING RULES (the whole feature rests on these three):
+//   issue   — sheet sent to the pattarai. The material is still yours, just at
+//             the workshop, so company stock does NOT change. It only raises a
+//             balance against that pattarai.
+//   pieces  — finished pieces handed back. Reduces the pattarai balance.
+//             Company stock does NOT change here either: the material leaves
+//             stock when the finished product is SOLD, which the sale flow
+//             already deducts.
+//   wastage — settled monthly / every two months. This is the ONLY entry that
+//             permanently destroys material, so it reduces the pattarai balance
+//             AND company stock (via a linked raw-material transaction).
+//
+// So for 120 kg issued → 100 kg of pieces back → 20 kg wastage, the pattarai
+// balance returns to zero and exactly 20 kg leaves company stock as loss.
+// ══════════════════════════════════════════════════════════════════════════════
+enum PattaraiTxType {
+  issue, pieces, wastage;
+
+  String get label {
+    switch (this) {
+      case issue: return 'Sheet sent';
+      case pieces: return 'Pieces received';
+      case wastage: return 'Wastage';
+    }
+  }
+
+  /// issue adds to what the pattarai holds, the other two clear it down.
+  bool get addsToPattarai => this == issue;
+
+  static PattaraiTxType fromString(String s) {
+    switch (s) {
+      case 'pieces': return pieces;
+      case 'wastage': return wastage;
+      default: return issue;
+    }
+  }
+}
+
+class PattaraiStockTx {
+  final String? id;
+  final String pattaraiId;
+  final String pattaraiName;
+  final PattaraiTxType type;
+  final RawMaterialType materialType;
+  final double quantityKg; // always stored positive; [type] decides the sign
+  final DateTime date;
+  final String note;
+
+  /// For wastage only — the rawMaterialTransactions doc that took this off
+  /// company stock, so deleting the wastage can undo that too.
+  final String? stockTxId;
+
+  const PattaraiStockTx({
+    this.id,
+    required this.pattaraiId,
+    required this.pattaraiName,
+    required this.type,
+    required this.materialType,
+    required this.quantityKg,
+    required this.date,
+    this.note = '',
+    this.stockTxId,
+  });
+
+  double get signedKg =>
+      type.addsToPattarai ? quantityKg.abs() : -quantityKg.abs();
+
+  Map<String, dynamic> toMap() => {
+    'pattaraiId': pattaraiId,
+    'pattaraiName': pattaraiName,
+    'type': type.name,
+    'materialType': materialType.displayName,
+    'quantityKg': quantityKg,
+    'date': date.toIso8601String().substring(0, 10),
+    'timestamp': date.millisecondsSinceEpoch,
+    'note': note,
+    if (stockTxId != null) 'stockTxId': stockTxId,
+  };
+
+  factory PattaraiStockTx.fromMap(String id, Map<String, dynamic> m) =>
+      PattaraiStockTx(
+        id: id,
+        pattaraiId: m['pattaraiId'] ?? '',
+        pattaraiName: m['pattaraiName'] ?? '',
+        type: PattaraiTxType.fromString(m['type'] ?? 'issue'),
+        materialType: RawMaterialType.fromString(m['materialType'] ?? 'SS Sheet'),
+        quantityKg: (m['quantityKg'] as num?)?.toDouble() ?? 0,
+        date: m['date'] != null ? DateTime.parse(m['date']) : DateTime.now(),
+        note: m['note'] ?? '',
+        stockTxId: m['stockTxId'] as String?,
+      );
+}
+
+/// What one pattarai is holding, per metal.
+class PattaraiBalance {
+  final String pattaraiId;
+  final String pattaraiName;
+  double issued;
+  double piecesBack;
+  double wastage;
+
+  PattaraiBalance({
+    required this.pattaraiId,
+    required this.pattaraiName,
+    this.issued = 0,
+    this.piecesBack = 0,
+    this.wastage = 0,
+  });
+
+  /// Still at the workshop and not yet accounted for. Negative means more came
+  /// back than was ever sent — a data-entry mistake worth showing.
+  double get outstanding => issued - piecesBack - wastage;
+
+  /// Share of the issued sheet lost as wastage, 0–1. Null until something has
+  /// actually been issued.
+  double? get wastagePercent => issued <= 0 ? null : wastage / issued;
+}
+
+/// Scrap sold off. Wastage is not thrown away — it piles up and is sold every
+/// three to six months, so recorded wastage stays as a scrap balance until a
+/// sale clears it. Company sheet stock is NOT touched here: the material
+/// already left when the wastage was recorded.
+class WastageSale {
+  final String? id;
+  final RawMaterialType materialType;
+  final double quantityKg;
+  final double ratePerKg;
+  final DateTime date;
+  final String buyerName;
+  final String note;
+
+  const WastageSale({
+    this.id,
+    required this.materialType,
+    required this.quantityKg,
+    required this.ratePerKg,
+    required this.date,
+    this.buyerName = '',
+    this.note = '',
+  });
+
+  double get amount => quantityKg * ratePerKg;
+
+  Map<String, dynamic> toMap() => {
+    'materialType': materialType.displayName,
+    'quantityKg': quantityKg,
+    'ratePerKg': ratePerKg,
+    'amount': amount,
+    'date': date.toIso8601String().substring(0, 10),
+    'timestamp': date.millisecondsSinceEpoch,
+    'buyerName': buyerName,
+    'note': note,
+  };
+
+  factory WastageSale.fromMap(String id, Map<String, dynamic> m) => WastageSale(
+        id: id,
+        materialType: RawMaterialType.fromString(m['materialType'] ?? 'SS Sheet'),
+        quantityKg: (m['quantityKg'] as num?)?.toDouble() ?? 0,
+        ratePerKg: (m['ratePerKg'] as num?)?.toDouble() ?? 0,
+        date: m['date'] != null ? DateTime.parse(m['date']) : DateTime.now(),
+        buyerName: m['buyerName'] ?? '',
+        note: m['note'] ?? '',
+      );
+}
+
+/// Scrap sitting in the store: everything recorded as wastage, minus whatever
+/// has been sold. Pass [metal] to limit it to one metal.
+double wastageInStore(
+  List<PattaraiStockTx> txs,
+  List<WastageSale> sales, {
+  MaterialMetal? metal,
+}) {
+  double collected = 0;
+  for (final t in txs) {
+    if (t.type != PattaraiTxType.wastage) continue;
+    if (metal != null && t.materialType.metal != metal) continue;
+    collected += t.quantityKg.abs();
+  }
+  double sold = 0;
+  for (final s in sales) {
+    if (metal != null && s.materialType.metal != metal) continue;
+    sold += s.quantityKg.abs();
+  }
+  return collected - sold;
+}
+
+/// Money brought in by scrap sales, optionally for one metal.
+double wastageSaleIncome(List<WastageSale> sales, {MaterialMetal? metal}) {
+  double total = 0;
+  for (final s in sales) {
+    if (metal != null && s.materialType.metal != metal) continue;
+    total += s.amount;
+  }
+  return total;
+}
+
+/// Rolls a flat list of entries into one balance per pattarai.
+/// Pure function — no Firestore, so the arithmetic can be tested directly.
+List<PattaraiBalance> computePattaraiBalances(
+  List<PattaraiStockTx> txs, {
+  MaterialMetal? metal,
+}) {
+  final byPattarai = <String, PattaraiBalance>{};
+  for (final tx in txs) {
+    if (metal != null && tx.materialType.metal != metal) continue;
+    final b = byPattarai.putIfAbsent(
+      tx.pattaraiId,
+      () => PattaraiBalance(
+          pattaraiId: tx.pattaraiId, pattaraiName: tx.pattaraiName),
+    );
+    switch (tx.type) {
+      case PattaraiTxType.issue:
+        b.issued += tx.quantityKg.abs();
+        break;
+      case PattaraiTxType.pieces:
+        b.piecesBack += tx.quantityKg.abs();
+        break;
+      case PattaraiTxType.wastage:
+        b.wastage += tx.quantityKg.abs();
+        break;
+    }
+  }
+  final list = byPattarai.values.toList()
+    ..sort((a, b) => b.outstanding.compareTo(a.outstanding));
+  return list;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // APP SETTINGS (Advanced settings — single document)
 // ══════════════════════════════════════════════════════════════════════════════
 class AppSettings {
   final double lowStockThresholdKg; // Inventory tab highlights a material red below this
   final Map<String, double> defaultRatesPerKg; // keyed by RawMaterialType.displayName
 
+  // ── AI assistant ──────────────────────────────────────────────────────────
+  // Your own Gemini API key (aistudio.google.com/apikey). When empty, the app
+  // falls back to the key compiled into AiService.
+  final String geminiApiKey;
+  final String aiModel; // empty = use AiService's default model
+  final String aiLanguage; // 'auto' | 'ta' | 'tanglish' | 'en'
+
   const AppSettings({
     this.lowStockThresholdKg = 0,
     this.defaultRatesPerKg = const {},
+    this.geminiApiKey = '',
+    this.aiModel = '',
+    this.aiLanguage = 'auto',
   });
 
   Map<String, dynamic> toMap() => {
     'lowStockThresholdKg': lowStockThresholdKg,
     'defaultRatesPerKg': defaultRatesPerKg,
+    'geminiApiKey': geminiApiKey,
+    'aiModel': aiModel,
+    'aiLanguage': aiLanguage,
   };
 
   factory AppSettings.fromMap(Map<String, dynamic> m) => AppSettings(
     lowStockThresholdKg: (m['lowStockThresholdKg'] as num?)?.toDouble() ?? 0,
     defaultRatesPerKg: ((m['defaultRatesPerKg'] as Map<String, dynamic>?) ?? {})
         .map((k, v) => MapEntry(k, (v as num).toDouble())),
+    geminiApiKey: m['geminiApiKey'] ?? '',
+    aiModel: m['aiModel'] ?? '',
+    aiLanguage: m['aiLanguage'] ?? 'auto',
+  );
+
+  AppSettings copyWith({
+    double? lowStockThresholdKg,
+    Map<String, double>? defaultRatesPerKg,
+    String? geminiApiKey,
+    String? aiModel,
+    String? aiLanguage,
+  }) => AppSettings(
+    lowStockThresholdKg: lowStockThresholdKg ?? this.lowStockThresholdKg,
+    defaultRatesPerKg: defaultRatesPerKg ?? this.defaultRatesPerKg,
+    geminiApiKey: geminiApiKey ?? this.geminiApiKey,
+    aiModel: aiModel ?? this.aiModel,
+    aiLanguage: aiLanguage ?? this.aiLanguage,
   );
 }
 
